@@ -29,7 +29,7 @@ def square(z):
 
 
 if __name__ == "__main__":
-    node = square(add(square(square(2)), square(square(2))))
+    node = square(add(square(square(2)), y=square(square(2))))
 
     result = flow.run(node)
     print(node, result)
