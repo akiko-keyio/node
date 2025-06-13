@@ -183,7 +183,6 @@ class Node:
         "args",
         "kwargs",
         "deps",
-        "_signature_key",
         "signature",
         "__weakref__",
     )
@@ -205,6 +204,12 @@ class Node:
         for name in sorted(self.kwargs):
             pieces.append(f"{name}={_canonical(self.kwargs[name])}")
         self._signature_key = f"{fn.__name__}({', '.join(pieces)})"
+
+        if _is_linear_chain(self):
+            self.signature = _render_expr(self, canonical=True)
+        else:
+            script, _ = _build_script(self)
+            self.signature = script
 
         if _is_linear_chain(self):
             self.signature = _render_expr(self, canonical=True)
@@ -252,7 +257,7 @@ def _build_script(root: Node):
         return mapping[x] if isinstance(x, Node) else _canonical(x)
 
     for n in order:
-        key = n._signature_key
+        key = n.signature
         if key in sig2var:
             mapping[n] = sig2var[key]
             continue
