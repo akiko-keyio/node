@@ -212,6 +212,9 @@ class Node:
             script, _ = _build_script(self)
             self.signature = script
 
+        # test behavior when using the final signature for deduplication
+        self._signature_key = self.signature
+
     def _detect_cycle(self, anc: set):
         if self in anc:
             raise ValueError("Cycle detected in DAG")
