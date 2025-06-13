@@ -11,3 +11,6 @@ wheels/
 
 # Pycharm
 .idea
+
+# Cache
+.cache
