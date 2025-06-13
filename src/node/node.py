@@ -278,31 +278,26 @@ def _build_script(root: Node):
 
 
 def _is_linear_chain(root: Node) -> bool:
-    """Return True if ``root`` forms a simple chain without shared nodes."""
+    """Return ``True`` if the graph rooted at ``root`` has no diamond dependencies."""
 
     seen: set[Node] = set()
-    indeg: Dict[Node, int] = defaultdict(int)
-    ok = True
+    indeg: Dict[str, int] = defaultdict(int)
+    diamond = False
 
     def visit(n: Node):
-        nonlocal ok
+        nonlocal diamond
         if n in seen:
             return
         seen.add(n)
 
-        child_nodes = [d for d in n.deps if isinstance(d, Node)]
-        for c in child_nodes:
-            indeg[c] += 1
-            if indeg[c] > 1:
-                ok = False
-        if len(child_nodes) > 1:
-            ok = False
-            return
-        if child_nodes:
-            visit(child_nodes[0])
+        for c in (d for d in n.deps if isinstance(d, Node)):
+            indeg[c.signature] += 1
+            if indeg[c.signature] > 1:
+                diamond = True
+            visit(c)
 
     visit(root)
-    return ok
+    return not diamond
 
 
 # ----------------------------------------------------------------------

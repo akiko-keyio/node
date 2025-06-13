@@ -20,6 +20,23 @@ def test_repr_matches_signature(tmp_path):
     assert repr(diamond) == diamond.signature
 
 
+def test_branch_no_diamond(tmp_path):
+    """Branching without shared nodes should not expand to a script."""
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def add(x, y):
+        return x + y
+
+    @flow.task()
+    def square(z):
+        return z * z
+
+    node = square(add(square(1), square(2)))
+    expected = "square(z=add(x=square(z=1), y=square(z=2)))"
+    assert node.signature == expected
+
+
 def test_signature_key_canonicalization():
     def identity(x=None, **kw):
         return (x, kw)
