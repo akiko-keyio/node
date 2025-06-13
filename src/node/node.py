@@ -89,10 +89,13 @@ class MemoryLRU(Cache):
 
 class DiskJoblib(Cache):
     """Filesystem cache using joblib pickles.
-
+    
     Results are stored under ``<func>/<expr>.pkl`` whenever possible.  If the
     expression cannot be used as a file name, the fallback ``<hash>.pkl`` is
     used and ``<hash>.py`` contains ``repr(node)`` for inspection.
+
+    Results are stored as ``<hash>.pkl``.  A human readable ``<hash>.py`` file
+    containing ``repr(node)`` is also written for inspection.
     """
 
     def __init__(self, root: str | Path = ".cache", lock: bool = True):
@@ -116,6 +119,7 @@ class DiskJoblib(Cache):
     def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
         md = hashlib.md5(key.encode()).hexdigest()
         return self._subdir(key) / (md + ext)
+
 
     def get(self, key: str):
         p = self._expr_path(key)
@@ -144,6 +148,11 @@ class DiskJoblib(Cache):
         if self._expr_path(node.signature).exists():
             return
         p = self._hash_path(node.signature, ".py")
+        with open(p, "w") as f:
+            f.write(repr(node) + "\n")
+
+    def save_script(self, node: "Node"):
+        p = self._path(node.signature, ".py")
         with open(p, "w") as f:
             f.write(repr(node) + "\n")
 

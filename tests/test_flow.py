@@ -332,6 +332,7 @@ def test_cache_scripts(tmp_path):
     pkls = sorted(tmp_path.rglob("*.pkl"))
     pys = sorted(tmp_path.rglob("*.py"))
     assert len(pkls) == 4
+
     for p in pkls:
         if len(p.stem) == 32:
             py = p.with_suffix(".py")
@@ -368,3 +369,4 @@ def test_cache_fallback_hash(tmp_path, monkeypatch):
     pkl = disk._hash_path(node.signature)
     assert pkl.exists()
     assert pkl.with_suffix(".py").exists()
+
