@@ -57,16 +57,19 @@ flow = Flow(
 )
 ```
 
-`DiskJoblib` 会将结果保存为 `<hash>.pkl`，并在同目录生成相同名字的 `.py` 文件，
-其中包含节点对象的 `repr`，方便查看缓存内容。例如运行 `tutorial.py` 后可能会
-看到如下文件：
+`DiskJoblib` 会以函数名创建子目录，优先将结果保存为 `<expr>.pkl`，其中
+`<expr>` 为节点表达式经简单清理后的字符串。当文件名过长或包含非法字符时，
+会退回保存为 `<hash>.pkl`，并在同目录写入 `<hash>.py` 记录 `repr(node)` 以便查
+看。例如运行 `tutorial.py` 后可能会看到：
 
 ```
-.cache/fa/fa817707222760b0a0c23433a19cfdb8.pkl
-.cache/fa/fa817707222760b0a0c23433a19cfdb8.py
+.cache/inc/inc_3_.pkl
+.cache/add/7d04d898305ce53d9c744df7d005317b.pkl
+.cache/add/7d04d898305ce53d9c744df7d005317b.py
 ```
 
-这里目录 `fa` 是哈希值的前两位，文件名是对应节点签名的 MD5 值。
+第一个文件使用表达式命名，第二个文件因为名称不合法或过长而使用哈希值。
+
 
 ## 配置对象
 

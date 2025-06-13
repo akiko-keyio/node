@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 import pytest
+import joblib
 from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
 
 
@@ -331,8 +332,41 @@ def test_cache_scripts(tmp_path):
     pkls = sorted(tmp_path.rglob("*.pkl"))
     pys = sorted(tmp_path.rglob("*.py"))
     assert len(pkls) == 4
-    assert len(pys) == 4
+
     for p in pkls:
-        assert len(p.stem) == 32
-        py = p.with_suffix(".py")
-        assert py.exists()
+        if len(p.stem) == 32:
+            py = p.with_suffix(".py")
+            assert py.exists()
+        else:
+            assert not p.with_suffix(".py").exists()
+    assert len(pys) == sum(len(p.stem) == 32 for p in pkls)
+
+
+def test_cache_fallback_hash(tmp_path, monkeypatch):
+    disk = DiskJoblib(tmp_path)
+    flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
+
+    @flow.task()
+    def inc(x):
+        return x + 1
+
+    orig_dump = joblib.dump
+
+    def bad_first_dump(obj, path, *args, **kwargs):
+        if not hasattr(bad_first_dump, "done"):
+            bad_first_dump.done = True
+            raise OSError("fail")
+        return orig_dump(obj, path, *args, **kwargs)
+
+    monkeypatch.setattr(joblib, "dump", bad_first_dump)
+
+    node = inc(5)
+    assert flow.run(node) == 6
+
+    expr_file = disk._expr_path(node.signature)
+    assert not expr_file.exists()
+
+    pkl = disk._hash_path(node.signature)
+    assert pkl.exists()
+    assert pkl.with_suffix(".py").exists()
+

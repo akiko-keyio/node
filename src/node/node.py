@@ -89,6 +89,10 @@ class MemoryLRU(Cache):
 
 class DiskJoblib(Cache):
     """Filesystem cache using joblib pickles.
+    
+    Results are stored under ``<func>/<expr>.pkl`` whenever possible.  If the
+    expression cannot be used as a file name, the fallback ``<hash>.pkl`` is
+    used and ``<hash>.py`` contains ``repr(node)`` for inspection.
 
     Results are stored as ``<hash>.pkl``.  A human readable ``<hash>.py`` file
     containing ``repr(node)`` is also written for inspection.
@@ -99,24 +103,53 @@ class DiskJoblib(Cache):
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
 
-    def _path(self, key: str, ext: str = ".pkl") -> Path:
+    def _subdir(self, key: str) -> Path:
+        fn = key.split("(", 1)[0]
+        sub = self.root / fn
+        sub.mkdir(parents=True, exist_ok=True)
+        return sub
+
+    def _sanitize(self, expr: str) -> str:
+        safe = [c if c.isalnum() or c in "-._" else "_" for c in expr]
+        return "".join(safe)[:120]
+
+    def _expr_path(self, key: str, ext: str = ".pkl") -> Path:
+        return self._subdir(key) / (self._sanitize(key) + ext)
+
+    def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
         md = hashlib.md5(key.encode()).hexdigest()
-        sub = self.root / md[:2]
-        sub.mkdir(exist_ok=True)
-        return sub / (md + ext)
+        return self._subdir(key) / (md + ext)
+
 
     def get(self, key: str):
-        p = self._path(key)
+        p = self._expr_path(key)
+        if p.exists():
+            return True, joblib.load(p)
+        p = self._hash_path(key)
         if p.exists():
             return True, joblib.load(p)
         return False, MISS
 
     def put(self, key: str, value: Any):
-        p = self._path(key)
+        p = self._expr_path(key)
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else _nullcontext()
-        with ctx:
-            joblib.dump(value, p)
+        try:
+            with ctx:
+                joblib.dump(value, p)
+        except OSError:
+            p = self._hash_path(key)
+            lock_path = str(p) + ".lock"
+            ctx = FileLock(lock_path) if self.lock else _nullcontext()
+            with ctx:
+                joblib.dump(value, p)
+
+    def save_script(self, node: "Node"):
+        if self._expr_path(node.signature).exists():
+            return
+        p = self._hash_path(node.signature, ".py")
+        with open(p, "w") as f:
+            f.write(repr(node) + "\n")
 
     def save_script(self, node: "Node"):
         p = self._path(node.signature, ".py")

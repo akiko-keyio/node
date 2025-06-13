@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+
 import hashlib
 
 import yaml
@@ -53,8 +54,12 @@ def main() -> None:
 
     # 查看生成的缓存文件名
     disk = next(c for c in flow.engine.cache.caches if isinstance(c, DiskJoblib))
-    path = disk._path(n.signature)
-    print("file saved as", path)
+
+    p = disk._expr_path(n.signature)
+    if not p.exists():
+        p = disk._hash_path(n.signature)
+    print("file saved as", p)
+
 
 
 if __name__ == "__main__":
