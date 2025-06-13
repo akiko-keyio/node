@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import yaml
 
 from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
