@@ -354,8 +354,10 @@ class Flow:
             sig_obj = inspect.signature(fn)
 
             def wrapper(*args, **kwargs):
-                merged = {**self.config.defaults(fn.__name__), **kwargs}
-                bound = sig_obj.bind_partial(*args, **merged)
+                bound = sig_obj.bind_partial(*args, **kwargs)
+                for name, val in self.config.defaults(fn.__name__).items():
+                    if name not in bound.arguments:
+                        bound.arguments[name] = val
                 bound.apply_defaults()
 
                 node = Node(fn, bound.args, bound.kwargs)

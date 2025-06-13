@@ -50,6 +50,18 @@ def test_defaults_override(tmp_path):
     assert flow.run(node) == 8
 
 
+def test_positional_args_ignore_config(tmp_path):
+    conf = Config({"add": {"y": 5}})
+    flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def add(x, y):
+        return x + y
+
+    node = add(2, 3)
+    assert flow.run(node) == 5
+
+
 def test_config_from_yaml(tmp_path):
     cfg_path = Path(__file__).with_name("config.yaml")
     with open(cfg_path) as f:
