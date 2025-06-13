@@ -18,9 +18,11 @@ import inspect
 import os
 import threading
 import time
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import nullcontext, suppress
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 from weakref import WeakValueDictionary  # ★ NEW
@@ -55,11 +57,6 @@ def _canonical(obj: Any) -> str:
         inner = ", ".join(_canonical(v) for v in sorted(obj))
         return "{" + inner + "}"
     return repr(obj)
-
-
-@contextmanager
-def _nullcontext():
-    yield
 
 
 # ----------------------------------------------------------------------
@@ -134,23 +131,23 @@ class DiskJoblib(Cache):
     def put(self, key: str, value: Any):
         p = self._expr_path(key)
         lock_path = str(p) + ".lock"
-        ctx = FileLock(lock_path) if self.lock else _nullcontext()
-        try:
+        ctx = FileLock(lock_path) if self.lock else nullcontext()
+        with suppress(OSError):
             with ctx:
                 joblib.dump(value, p)
-        except OSError:
-            p = self._hash_path(key)
-            lock_path = str(p) + ".lock"
-            ctx = FileLock(lock_path) if self.lock else _nullcontext()
-            with ctx:
-                joblib.dump(value, p)
+            return
+
+        p = self._hash_path(key)
+        lock_path = str(p) + ".lock"
+        ctx = FileLock(lock_path) if self.lock else nullcontext()
+        with ctx:
+            joblib.dump(value, p)
 
     def save_script(self, node: "Node"):
         if self._expr_path(node.signature).exists():
             return
         p = self._hash_path(node.signature, ".py")
-        with open(p, "w") as f:
-            f.write(repr(node) + "\n")
+        p.write_text(repr(node) + "\n")
 
 
 class ChainCache(Cache):
@@ -201,7 +198,7 @@ class Node:
             *(a for a in self.args if isinstance(a, Node)),
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
-        self._detect_cycle(set())
+        self._detect_cycle()
 
         if _is_linear_chain(self):
             self.signature = _render_call(self.fn, self.args, self.kwargs, canonical=True)
@@ -209,13 +206,11 @@ class Node:
             script, _ = _build_script(self)
             self.signature = script
 
-    def _detect_cycle(self, anc: set):
-        if self in anc:
-            raise ValueError("Cycle detected in DAG")
-        anc.add(self)
-        for d in self.deps:
-            d._detect_cycle(anc)
-        anc.remove(self)
+    def _detect_cycle(self):
+        try:
+            _topo_order(self)
+        except CycleError as e:
+            raise ValueError("Cycle detected in DAG") from e
 
     def __repr__(self):
         return self.signature
@@ -225,18 +220,16 @@ class Node:
 # DAG helpers
 # ----------------------------------------------------------------------
 def _topo_order(root: Node):
-    out, seen = [], set()
-
-    def dfs(n: Node):
+    ts, stack, seen = TopologicalSorter(), [root], set()
+    while stack:
+        n = stack.pop()
         if n in seen:
-            return
+            continue
         seen.add(n)
-        for d in sorted(n.deps, key=lambda x: x.signature):
-            dfs(d)
-        out.append(n)
-
-    dfs(root)
-    return out
+        deps = sorted(n.deps, key=lambda x: getattr(x, "signature", ""))
+        ts.add(n, *deps)
+        stack.extend(deps)
+    return list(ts.static_order())
 
 
 def _render_call(
@@ -361,7 +354,7 @@ class Engine:
         order = _topo_order(root)
 
         indeg = {n: len(n.deps) for n in order}
-        succ = {n: [] for n in order}
+        succ = defaultdict(list)
         for n in order:
             for d in n.deps:
                 succ[d].append(n)
