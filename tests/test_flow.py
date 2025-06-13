@@ -95,7 +95,7 @@ def test_build_script_repr(tmp_path):
 
     node = square(add(2, 3))
     script = repr(node)
-    assert script.strip() == "square(add(2, 3))"
+    assert script.strip() == "square(z=add(x=2, y=3))"
 
 
 def test_linear_chain_repr(tmp_path):
@@ -114,7 +114,7 @@ def test_linear_chain_repr(tmp_path):
         return a
 
     node = f1(f2(f3(1)))
-    assert repr(node).strip() == "f1(f2(f3(1)))"
+    assert repr(node).strip() == "f1(a=f2(a=f3(a=1)))"
 
 def test_diamond_dependency(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
@@ -184,8 +184,8 @@ def test_repr_shared_nodes(tmp_path):
     node = combine(add(1, 2), add(1, 2))
     script = repr(node).strip().splitlines()
     assert script == [
-        "n0 = add(1, 2)",
-        "n1 = combine(n0, n0)",
+        "n0 = add(x=1, y=2)",
+        "n1 = combine(a=n0, b=n0)",
         "n1",
     ]
 
