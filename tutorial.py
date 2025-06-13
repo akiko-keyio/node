@@ -1,72 +1,62 @@
-"""Node Tutorial
-===============
+"""示例脚本
+================
 
-This tutorial shows how to use the Node library to build simple DAGs, how to
-inject configuration using YAML, and how cache keys are stored on disk.
+本脚本展示如何使用 Node 库构建简单的 DAG、
+从 YAML 加载默认参数以及查看磁盘缓存位置。
 """
 
-from node.node import Flow, Config, ChainCache, MemoryLRU, DiskJoblib
+from __future__ import annotations
+
+import hashlib
+
 import yaml
 
-# --- Basic usage -----------------------------------------------------------
+from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
+
+
 yaml_text = """
 add:
   y: 5
 """
-flow = Flow(cache=ChainCache([MemoryLRU(),
-                              DiskJoblib(".cache", pretty=True)]),
-            config=Config(yaml.safe_load(yaml_text)))
+
+flow = Flow(
+    cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
+    config=Config(yaml.safe_load(yaml_text)),
+)
 
 
 @flow.task()
-def add(x, y):
+def add(x: int, y: int) -> int:
     return x + y
 
 
 @flow.task()
-def square(z):
+def square(z: int) -> int:
     return z * z
 
 
-if __name__ == "__main__":
-    node = square(add(square(square(2)), y=square(square(2))))
-
-    result = flow.run(node)
-    print(node, result)
-
-
-# --- Configuration injection ----------------------------------------------
-
-# The Flow constructor accepts a Config object that provides default parameters
-# for tasks. These defaults can be loaded from a YAML file or string so that
-# configuration lives outside your code. Explicit arguments override these
-# defaults when ``flow.run`` executes.
-
 @flow.task()
-def add(x, y):
-    return x + y
-
-
-result_cfg = flow.run(add(x=2))  # y from YAML overrides default
-print(result_cfg)
-
-
-# --- Cache keys and disk storage -------------------------------------------
-
-# Flow caches results in memory and on disk using ``MemoryLRU`` and
-# ``DiskJoblib``.  Each node has a unique ``signature`` derived from its
-# expression. ``DiskJoblib`` normally stores each result as ``<md5>.pkl`` using
-# the MD5 hash of that signature.  The class uses :class:`FileLock` to guard
-# concurrent writes (falling back to a ``_nullcontext`` when locking is
-# disabled).
-
-# Passing ``pretty=True`` keeps cache file names partly readable by prefixing a
-# sanitized snippet of the signature before the hash.
-
-@flow.task()
-def inc(x):
+def inc(x: int) -> int:
     return x + 1
 
 
-n = inc(3)
-print(flow.run(n))
+def main() -> None:
+    node = square(add(square(square(2)), y=square(square(2))))
+    result = flow.run(node)
+    print(node, result)
+
+    result_cfg = flow.run(add(x=2))
+    print("from config:", result_cfg)
+
+    n = inc(3)
+    print("cached:", flow.run(n))
+
+    # 查看生成的缓存文件名
+    disk = next(c for c in flow.engine.cache.caches if isinstance(c, DiskJoblib))
+    path = disk._path(n.signature)
+    print("file saved as", path)
+
+
+if __name__ == "__main__":
+    main()
+

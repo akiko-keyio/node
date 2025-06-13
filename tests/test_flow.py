@@ -94,11 +94,26 @@ def test_build_script_repr(tmp_path):
 
     node = square(add(2, 3))
     script = repr(node)
-    assert script.strip().splitlines() == [
-        "n0 = add(2, 3)",
-        "n1 = square(n0)",
-        "n1",
-    ]
+    assert script.strip() == "square(add(2, 3))"
+
+
+def test_linear_chain_repr(tmp_path):
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def f1(a):
+        return a
+
+    @flow.task()
+    def f2(a):
+        return a
+
+    @flow.task()
+    def f3(a):
+        return a
+
+    node = f1(f2(f3(1)))
+    assert repr(node).strip() == "f1(f2(f3(1)))"
 
 def test_diamond_dependency(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
@@ -288,8 +303,8 @@ def test_callbacks_invoked(tmp_path):
     assert events == [("node", True), ("flow", 0)]
 
 
-def test_pretty_cache_files(tmp_path):
-    disk = DiskJoblib(tmp_path, pretty=True)
+def test_cache_scripts(tmp_path):
+    disk = DiskJoblib(tmp_path)
     flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
 
     @flow.task()
@@ -313,10 +328,11 @@ def test_pretty_cache_files(tmp_path):
     expected = (4 + 1) * 2 + (4 + 1) + 3
     assert flow.run(root) == expected
 
-    pkls = list(tmp_path.rglob("*.pkl"))
+    pkls = sorted(tmp_path.rglob("*.pkl"))
+    pys = sorted(tmp_path.rglob("*.py"))
     assert len(pkls) == 4
-
-    prefix = disk._sanitize(root.signature)[:32]
-    assert any(p.name.startswith(prefix + "-") for p in pkls)
+    assert len(pys) == 4
     for p in pkls:
-        assert "-" in p.name
+        assert len(p.stem) == 32
+        py = p.with_suffix(".py")
+        assert py.exists()
