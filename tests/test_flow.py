@@ -1,5 +1,8 @@
-from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
+from pathlib import Path
+
+import yaml
 import pytest
+from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
 
 
 def test_flow_example(tmp_path):
@@ -38,6 +41,25 @@ def test_cache_skips_execution(tmp_path):
 def test_defaults_override(tmp_path):
     conf = Config({"add": {"y": 5}})
     flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def add(x, y=1):
+        return x + y
+
+    node = add(3)
+    assert flow.run(node) == 8
+
+
+def test_config_from_yaml(tmp_path):
+    cfg_path = Path(__file__).with_name("config.yaml")
+    with open(cfg_path) as f:
+        defaults = yaml.safe_load(f)
+
+    flow = Flow(
+        config=Config(defaults),
+        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
+        log=False,
+    )
 
     @flow.task()
     def add(x, y=1):

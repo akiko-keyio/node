@@ -57,6 +57,28 @@ flow = Flow(
 )
 ```
 
+## 配置对象
+
+可以给 `Flow` 传入 `Config` 实例，以集中管理任务的默认参数。配置通常来自一个 YAML 文件：
+
+```python
+import yaml
+from node.node import Flow, Config
+
+with open("defaults.yml") as f:
+    defaults = yaml.safe_load(f)
+
+flow = Flow(config=Config(defaults))
+```
+
+```yaml
+# defaults.yml
+add:
+  y: 5
+```
+
+项目的测试目录中也包含 `tests/config.yaml` 作为参考。
+
 ## 运行测试
 
 确保你已安装完所需依赖，在项目根目录下运行:
