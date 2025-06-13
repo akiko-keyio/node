@@ -26,10 +26,12 @@ def test_signature_key_canonicalization():
 
     n1 = Node(identity, ({2, 1},))
     n2 = Node(identity, ({1, 2},))
+
     assert n1.signature == n2.signature
 
     d1 = Node(identity, kwargs={"d": {"b": 2, "a": 1}})
     d2 = Node(identity, kwargs={"d": {"a": 1, "b": 2}})
+
     assert d1.signature == d2.signature
 
 

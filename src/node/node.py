@@ -203,7 +203,13 @@ class Node:
             pieces.append(_canonical(arg))
         for name in sorted(self.kwargs):
             pieces.append(f"{name}={_canonical(self.kwargs[name])}")
-        self.signature = f"{fn.__name__}({', '.join(pieces)})"
+        self._signature_key = f"{fn.__name__}({', '.join(pieces)})"
+
+        if _is_linear_chain(self):
+            self.signature = _render_expr(self, canonical=True)
+        else:
+            script, _ = _build_script(self)
+            self.signature = script
 
         if _is_linear_chain(self):
             self.signature = _render_expr(self, canonical=True)
@@ -233,7 +239,7 @@ def _topo_order(root: Node):
         if n in seen:
             return
         seen.add(n)
-        for d in sorted(n.deps, key=lambda x: x.signature):
+        for d in sorted(n.deps, key=lambda x: x._signature_key):
             dfs(d)
         out.append(n)
 
