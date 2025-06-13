@@ -151,11 +151,6 @@ class DiskJoblib(Cache):
         with open(p, "w") as f:
             f.write(repr(node) + "\n")
 
-    def save_script(self, node: "Node"):
-        p = self._path(node.signature, ".py")
-        with open(p, "w") as f:
-            f.write(repr(node) + "\n")
-
 
 class ChainCache(Cache):
     """Chain several caches (e.g. Memory → Disk)."""
