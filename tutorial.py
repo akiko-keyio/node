@@ -3,12 +3,10 @@
 
 本脚本展示如何使用 Node 库构建简单的 DAG、
 从 YAML 加载默认参数以及查看磁盘缓存位置。
+计算结果会以节点的 ``signature`` 字符串作为缓存键。
 """
 
 from __future__ import annotations
-
-
-import hashlib
 
 import yaml
 
@@ -52,7 +50,8 @@ def main() -> None:
     n = inc(3)
     print("cached:", flow.run(n))
 
-    # 查看生成的缓存文件名
+    # 查看生成的缓存文件名和使用的缓存键
+    print("signature:", n.signature)
     disk = next(c for c in flow.engine.cache.caches if isinstance(c, DiskJoblib))
 
     p = disk._expr_path(n.signature)
