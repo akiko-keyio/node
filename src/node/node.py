@@ -104,7 +104,12 @@ class DiskJoblib(Cache):
         self.lock = lock
 
     def _subdir(self, key: str) -> Path:
-        fn = key.split("(", 1)[0]
+        """Return the directory corresponding to the node's function name."""
+        lines = key.strip().splitlines()
+        call_line = lines[-2] if len(lines) >= 2 else lines[0]
+        if " = " in call_line:
+            call_line = call_line.split(" = ", 1)[1]
+        fn = call_line.split("(", 1)[0]
         sub = self.root / fn
         sub.mkdir(parents=True, exist_ok=True)
         return sub
