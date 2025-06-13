@@ -38,14 +38,12 @@ print(result)  # 25
 ```python
 root = square(add(2, 3))
 print(repr(root))
-# n0 = add(2, 3)
-# n1 = square(n0)
-# n1
+# square(z=add(x=2, y=3))
 ```
 
 ## 缓存与并行
 
-Flow 默认使用 `MemoryLRU`和 `DiskJoblib`存储结果。你可以给定 `ChainCache`，也可通过 `executor` 和 `workers` 控制并行计算量。
+Flow 默认使用 `MemoryLRU` 和 `DiskJoblib` 存储结果，缓存键即节点的 `signature` 字符串。你可以给定 `ChainCache`，也可通过 `executor` 和 `workers` 控制并行计算量。
 
 ```python
 from node.node import Flow, ChainCache, MemoryLRU, DiskJoblib
@@ -58,14 +56,13 @@ flow = Flow(
 ```
 
 `DiskJoblib` 会以函数名创建子目录，优先将结果保存为 `<expr>.pkl`，其中
-`<expr>` 为节点表达式经简单清理后的字符串。当文件名过长或包含非法字符时，
-会退回保存为 `<hash>.pkl`，并在同目录写入 `<hash>.py` 记录 `repr(node)` 以便查
-看。例如运行 `tutorial.py` 后可能会看到：
+`<expr>` 就是节点的 `signature` 字符串。若该文件名不可用（过长或含非法字符），
+则退回保存为 `<hash>.pkl`，并在同目录写入 `<hash>.py` 记录 `repr(node)` 以便查看。例如运行 `tutorial.py` 后可能会看到：
 
 ```
-.cache/inc/inc_3_.pkl
-.cache/add/7d04d898305ce53d9c744df7d005317b.pkl
-.cache/add/7d04d898305ce53d9c744df7d005317b.py
+.cache/inc/inc(x=3).pkl
+.cache/add/8be18ab9a193dbbc86b394bac923ab03.pkl
+.cache/add/8be18ab9a193dbbc86b394bac923ab03.py
 ```
 
 第一个文件使用表达式命名，第二个文件因为名称不合法或过长而使用哈希值。
@@ -116,4 +113,4 @@ python tutorial.py
 ```bash
 pytest
 ```
-13 个测试全部通过即表示环境配置正确。
+全部 21 个测试通过即表示环境配置正确。
