@@ -88,15 +88,30 @@ class MemoryLRU(Cache):
 
 
 class DiskJoblib(Cache):
-    """Filesystem cache (joblib pickle)."""
-    def __init__(self, root: str | Path = ".cache", lock: bool = True):
+    """Filesystem cache using joblib pickles.
+
+    When ``pretty`` is True, cache file names include a sanitized snippet of the
+    cache key before the MD5 hash so they are somewhat readable.
+    """
+
+    def __init__(self, root: str | Path = ".cache", lock: bool = True, pretty: bool = False):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
+        self.pretty = pretty
+
+    def _sanitize(self, text: str) -> str:
+        safe = [c if c.isalnum() or c in "-_." else "_" for c in text]
+        return "".join(safe)
 
     def _path(self, key: str) -> Path:
-        name = hashlib.md5(key.encode()).hexdigest() + ".pkl"
-        sub = self.root / name[:2]
+        md = hashlib.md5(key.encode()).hexdigest()
+        if self.pretty:
+            prefix = self._sanitize(key)[:32]
+            name = f"{prefix}-{md}.pkl"
+        else:
+            name = md + ".pkl"
+        sub = self.root / md[:2]
         sub.mkdir(exist_ok=True)
         return sub / name
 
