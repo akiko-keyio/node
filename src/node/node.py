@@ -109,12 +109,8 @@ class DiskJoblib(Cache):
         sub.mkdir(parents=True, exist_ok=True)
         return sub
 
-    def _sanitize(self, expr: str) -> str:
-        safe = [c if c.isalnum() or c in "-._" else "_" for c in expr]
-        return "".join(safe)[:120]
-
     def _expr_path(self, key: str, ext: str = ".pkl") -> Path:
-        return self._subdir(key) / (self._sanitize(key) + ext)
+        return self._subdir(key) / (key + ext)
 
     def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
         md = hashlib.md5(key.encode()).hexdigest()
