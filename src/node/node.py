@@ -90,43 +90,62 @@ class MemoryLRU(Cache):
 class DiskJoblib(Cache):
     """Filesystem cache using joblib pickles.
 
-    When ``pretty`` is True, cache file names include a sanitized snippet of the
-    cache key before the MD5 hash so they are somewhat readable.
+    Results are stored under ``<func>/<expr>.pkl`` whenever possible.  If the
+    expression cannot be used as a file name, the fallback ``<hash>.pkl`` is
+    used and ``<hash>.py`` contains ``repr(node)`` for inspection.
     """
 
-    def __init__(self, root: str | Path = ".cache", lock: bool = True, pretty: bool = False):
+    def __init__(self, root: str | Path = ".cache", lock: bool = True):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
-        self.pretty = pretty
 
-    def _sanitize(self, text: str) -> str:
-        safe = [c if c.isalnum() or c in "-_." else "_" for c in text]
-        return "".join(safe)
+    def _subdir(self, key: str) -> Path:
+        fn = key.split("(", 1)[0]
+        sub = self.root / fn
+        sub.mkdir(parents=True, exist_ok=True)
+        return sub
 
-    def _path(self, key: str) -> Path:
+    def _sanitize(self, expr: str) -> str:
+        safe = [c if c.isalnum() or c in "-._" else "_" for c in expr]
+        return "".join(safe)[:120]
+
+    def _expr_path(self, key: str, ext: str = ".pkl") -> Path:
+        return self._subdir(key) / (self._sanitize(key) + ext)
+
+    def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
         md = hashlib.md5(key.encode()).hexdigest()
-        if self.pretty:
-            prefix = self._sanitize(key)[:32]
-            name = f"{prefix}-{md}.pkl"
-        else:
-            name = md + ".pkl"
-        sub = self.root / md[:2]
-        sub.mkdir(exist_ok=True)
-        return sub / name
+        return self._subdir(key) / (md + ext)
 
     def get(self, key: str):
-        p = self._path(key)
+        p = self._expr_path(key)
+        if p.exists():
+            return True, joblib.load(p)
+        p = self._hash_path(key)
         if p.exists():
             return True, joblib.load(p)
         return False, MISS
 
     def put(self, key: str, value: Any):
-        p = self._path(key)
+        p = self._expr_path(key)
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else _nullcontext()
-        with ctx:
-            joblib.dump(value, p)
+        try:
+            with ctx:
+                joblib.dump(value, p)
+        except OSError:
+            p = self._hash_path(key)
+            lock_path = str(p) + ".lock"
+            ctx = FileLock(lock_path) if self.lock else _nullcontext()
+            with ctx:
+                joblib.dump(value, p)
+
+    def save_script(self, node: "Node"):
+        if self._expr_path(node.signature).exists():
+            return
+        p = self._hash_path(node.signature, ".py")
+        with open(p, "w") as f:
+            f.write(repr(node) + "\n")
 
 
 class ChainCache(Cache):
@@ -149,6 +168,11 @@ class ChainCache(Cache):
         for c in self.caches:
             c.put(key, value)
 
+    def save_script(self, node: "Node"):
+        for c in self.caches:
+            if hasattr(c, "save_script"):
+                c.save_script(node)
+
 
 # ----------------------------------------------------------------------
 # DAG nodes
@@ -168,9 +192,8 @@ class Node:
         self._detect_cycle(set())
 
         pieces: List[str] = []
-        params = inspect.signature(fn).parameters
-        for name, arg in zip(params, self.args):
-            pieces.append(f"{name}={_canonical(arg)}")
+        for arg in self.args:
+            pieces.append(_canonical(arg))
         for name in sorted(self.kwargs):
             pieces.append(f"{name}={_canonical(self.kwargs[name])}")
         self.signature = f"{fn.__name__}({', '.join(pieces)})"
@@ -184,6 +207,8 @@ class Node:
         anc.remove(self)
 
     def __repr__(self):
+        if _is_linear_chain(self):
+            return _render_expr(self)
         script, _ = _build_script(self)
         return script
 
@@ -231,6 +256,33 @@ def _build_script(root: Node):
     return "\n".join(lines), mapping
 
 
+def _render_expr(n: Node) -> str:
+    def rend(v: Any) -> str:
+        return _render_expr(v) if isinstance(v, Node) else repr(v)
+
+    args_s = ", ".join(rend(a) for a in n.args)
+    kw_s = ", ".join(f"{k}={rend(v)}" for k, v in sorted(n.kwargs.items()))
+    call = ", ".join(filter(None, (args_s, kw_s)))
+    return f"{n.fn.__name__}({call})"
+
+
+def _is_linear_chain(root: Node) -> bool:
+    seen: set[Node] = set()
+
+    def visit(n: Node) -> bool:
+        if n in seen:
+            return False
+        seen.add(n)
+        child_nodes = [d for d in n.deps if isinstance(d, Node)]
+        if len(child_nodes) == 0:
+            return True
+        if len(child_nodes) > 1:
+            return False
+        return visit(child_nodes[0])
+
+    return visit(root)
+
+
 # ----------------------------------------------------------------------
 # engine
 # ----------------------------------------------------------------------
@@ -275,6 +327,8 @@ class Engine:
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         val = n.fn(*args, **kwargs)
         self.cache.put(n.signature, val)
+        if hasattr(self.cache, "save_script"):
+            self.cache.save_script(n)
         dur = time.perf_counter() - start
         if self.on_node_end:
             self.on_node_end(n, dur, False)
@@ -354,8 +408,10 @@ class Flow:
             sig_obj = inspect.signature(fn)
 
             def wrapper(*args, **kwargs):
-                merged = {**self.config.defaults(fn.__name__), **kwargs}
-                bound = sig_obj.bind_partial(*args, **merged)
+                bound = sig_obj.bind_partial(*args, **kwargs)
+                for name, val in self.config.defaults(fn.__name__).items():
+                    if name not in bound.arguments:
+                        bound.arguments[name] = val
                 bound.apply_defaults()
 
                 node = Node(fn, bound.args, bound.kwargs)
