@@ -5,23 +5,31 @@ This tutorial shows how to use the Node library to build simple DAGs, how to
 inject configuration using YAML, and how cache keys are stored on disk.
 """
 
-from node.node import Flow, Config
+from node.node import Flow, Config, ChainCache, MemoryLRU, DiskJoblib
 import yaml
 
 # --- Basic usage -----------------------------------------------------------
+yaml_text = """
+add:
+  y: 5
+"""
+flow = Flow(cache=ChainCache([MemoryLRU(),
+                              DiskJoblib(".cache", pretty=True)]),
+            config=Config(yaml.safe_load(yaml_text)))
 
-flow = Flow()
 
 @flow.task()
 def add(x, y):
     return x + y
 
+
 @flow.task()
 def square(z):
     return z * z
 
+
 if __name__ == "__main__":
-    node=square(add(square(square(2)), square(square(2))))
+    node = square(add(square(square(2)), square(square(2))))
 
     result = flow.run(node)
     print(node, result)
@@ -34,21 +42,13 @@ if __name__ == "__main__":
 # configuration lives outside your code. Explicit arguments override these
 # defaults when ``flow.run`` executes.
 
-yaml_text = """
-add:
-  y: 5
-"""
-
-conf = Config(yaml.safe_load(yaml_text))
-flow_cfg = Flow(config=conf)
-
-@flow_cfg.task()
-def add(x, y=1):
+@flow.task()
+def add(x, y):
     return x + y
 
-if __name__ == "__main__":
-    result_cfg = flow_cfg.run(add(2))  # y from YAML overrides default
-    print(result_cfg)  # 7
+
+result_cfg = flow.run(add(x=2))  # y from YAML overrides default
+print(result_cfg)
 
 
 # --- Cache keys and disk storage -------------------------------------------
@@ -63,16 +63,10 @@ if __name__ == "__main__":
 # Passing ``pretty=True`` keeps cache file names partly readable by prefixing a
 # sanitized snippet of the signature before the hash.
 
-if __name__ == "__main__":
-    from node.node import ChainCache, MemoryLRU, DiskJoblib
+@flow.task()
+def inc(x):
+    return x + 1
 
-    disk = DiskJoblib(".cache", pretty=True)
-    flow_cache = Flow(cache=ChainCache([MemoryLRU(), disk]))
 
-    @flow_cache.task()
-    def inc(x):
-        return x + 1
-
-    n = inc(3)
-    print(flow_cache.run(n))
-
+n = inc(3)
+print(flow.run(n))
