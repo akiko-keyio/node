@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import yaml
 
 from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
@@ -48,6 +50,11 @@ def main() -> None:
 
     n = inc(3)
     print("cached:", flow.run(n))
+
+    # 查看生成的缓存文件名
+    disk = next(c for c in flow.engine.cache.caches if isinstance(c, DiskJoblib))
+    path = disk._path(n.signature)
+    print("file saved as", path)
 
 
 if __name__ == "__main__":
