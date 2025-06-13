@@ -230,11 +230,6 @@ class Engine:
         on_node_end: Callable[[Node, float, bool], None] | None = None,
         on_flow_end: Callable[[Node, float, int], None] | None = None,
     ):
-        if executor == "process" and os.name == "nt":     # ★ NEW guard
-            raise RuntimeError(
-                "ProcessPoolExecutor is not supported on Windows in this build; "
-                "use executor='thread' instead."
-            )
 
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
         self.executor = executor
