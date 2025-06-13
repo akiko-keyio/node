@@ -1,0 +1,23 @@
+[project]
+name = "node"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Aki", email = "838013444@qq.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "cachetools>=6.0.0",
+    "filelock>=3.18.0",
+    "joblib>=1.5.1",
+    "loguru>=0.7.3",
+    "pytest>=8.4.0",
+]
+
+[project.scripts]
+node = "node:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
