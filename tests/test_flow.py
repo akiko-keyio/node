@@ -119,6 +119,27 @@ def test_node_deduplication(tmp_path):
     assert n1 is n2
 
 
+def test_repr_shared_nodes(tmp_path):
+    """repr should reuse the same variable for identical nodes."""
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def add(x, y):
+        return x + y
+
+    @flow.task()
+    def combine(a, b):
+        return a + b
+
+    node = combine(add(1, 2), add(1, 2))
+    script = repr(node).strip().splitlines()
+    assert script == [
+        "n0 = add(1, 2)",
+        "n1 = combine(n0, n0)",
+        "n1",
+    ]
+
+
 def test_set_canonicalization(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
