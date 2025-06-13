@@ -274,3 +274,37 @@ def test_callbacks_invoked(tmp_path):
     events.clear()
     assert flow.run(node) == 3
     assert events == [("node", True), ("flow", 0)]
+
+
+def test_pretty_cache_files(tmp_path):
+    disk = DiskJoblib(tmp_path, pretty=True)
+    flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
+
+    @flow.task()
+    def base(x):
+        return x + 1
+
+    @flow.task()
+    def left(a):
+        return a * 2
+
+    @flow.task()
+    def right(a):
+        return a + 3
+
+    @flow.task()
+    def final(x, y):
+        return x + y
+
+    b = base(4)
+    root = final(left(b), right(b))
+    expected = (4 + 1) * 2 + (4 + 1) + 3
+    assert flow.run(root) == expected
+
+    pkls = list(tmp_path.rglob("*.pkl"))
+    assert len(pkls) == 4
+
+    prefix = disk._sanitize(root.signature)[:32]
+    assert any(p.name.startswith(prefix + "-") for p in pkls)
+    for p in pkls:
+        assert "-" in p.name
