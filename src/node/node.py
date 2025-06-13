@@ -198,21 +198,8 @@ class Node:
         ]
         self._detect_cycle(set())
 
-        pieces: List[str] = []
-        for arg in self.args:
-            pieces.append(_canonical(arg))
-        for name in sorted(self.kwargs):
-            pieces.append(f"{name}={_canonical(self.kwargs[name])}")
-        self._signature_key = f"{fn.__name__}({', '.join(pieces)})"
-
         if _is_linear_chain(self):
-            self.signature = _render_expr(self, canonical=True)
-        else:
-            script, _ = _build_script(self)
-            self.signature = script
-
-        if _is_linear_chain(self):
-            self.signature = _render_expr(self, canonical=True)
+            self.signature = _render_call(self.fn, self.args, self.kwargs, canonical=True)
         else:
             script, _ = _build_script(self)
             self.signature = script
@@ -239,12 +226,34 @@ def _topo_order(root: Node):
         if n in seen:
             return
         seen.add(n)
-        for d in sorted(n.deps, key=lambda x: x._signature_key):
+        for d in sorted(n.deps, key=lambda x: x.signature):
             dfs(d)
         out.append(n)
 
     dfs(root)
     return out
+
+
+def _render_call(
+    fn: Callable,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    *,
+    canonical: bool = False,
+    mapping: Dict[Node, str] | None = None,
+) -> str:
+    """Render a function call with argument names."""
+
+    def rend(v: Any) -> str:
+        if isinstance(v, Node):
+            return mapping[v] if mapping is not None else _render_call(v.fn, v.args, v.kwargs, canonical=canonical)
+        return _canonical(v) if canonical else repr(v)
+
+    sig = inspect.signature(fn)
+    bound = sig.bind_partial(*args, **kwargs)
+
+    parts = [f"{name}={rend(val)}" for name, val in bound.arguments.items()]
+    return f"{fn.__name__}({', '.join(parts)})"
 
 
 def _build_script(root: Node):
@@ -253,36 +262,21 @@ def _build_script(root: Node):
     mapping: Dict[Node, str] = {}
     lines: List[str] = []
 
-    def rend(x):
-        return mapping[x] if isinstance(x, Node) else _canonical(x)
-
     for n in order:
-        key = n.signature
+        key = getattr(n, "signature", None)
+        if key is None:
+            key = _render_call(n.fn, n.args, n.kwargs, canonical=True)
         if key in sig2var:
             mapping[n] = sig2var[key]
             continue
         var = f"n{len(sig2var)}"
         sig2var[key] = var
         mapping[n] = var
-        args_s = ", ".join(rend(a) for a in n.args)
-        kw_s = ", ".join(f"{k}={rend(v)}" for k, v in n.kwargs.items())
-        call = ", ".join(filter(None, (args_s, kw_s)))
-        lines.append(f"{var} = {n.fn.__name__}({call})")
+        call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
+        lines.append(f"{var} = {call}")
 
     lines.append(mapping[root])
     return "\n".join(lines), mapping
-
-
-def _render_expr(n: Node, *, canonical: bool = False) -> str:
-    def rend(v: Any) -> str:
-        if isinstance(v, Node):
-            return _render_expr(v, canonical=canonical)
-        return _canonical(v) if canonical else repr(v)
-
-    args_s = ", ".join(rend(a) for a in n.args)
-    kw_s = ", ".join(f"{k}={rend(v)}" for k, v in sorted(n.kwargs.items()))
-    call = ", ".join(filter(None, (args_s, kw_s)))
-    return f"{n.fn.__name__}({call})"
 
 
 def _is_linear_chain(root: Node) -> bool:
