@@ -178,7 +178,14 @@ class ChainCache(Cache):
 # DAG nodes
 # ----------------------------------------------------------------------
 class Node:
-    __slots__ = ("fn", "args", "kwargs", "deps", "signature", "__weakref__")
+    __slots__ = (
+        "fn",
+        "args",
+        "kwargs",
+        "deps",
+        "signature",
+        "__weakref__",
+    )
 
     def __init__(self, fn, args: Tuple = (), kwargs: Dict | None = None):
         self.fn = fn
@@ -198,6 +205,12 @@ class Node:
             pieces.append(f"{name}={_canonical(self.kwargs[name])}")
         self.signature = f"{fn.__name__}({', '.join(pieces)})"
 
+        if _is_linear_chain(self):
+            self.signature = _render_expr(self, canonical=True)
+        else:
+            script, _ = _build_script(self)
+            self.signature = script
+
     def _detect_cycle(self, anc: set):
         if self in anc:
             raise ValueError("Cycle detected in DAG")
@@ -207,10 +220,7 @@ class Node:
         anc.remove(self)
 
     def __repr__(self):
-        if _is_linear_chain(self):
-            return _render_expr(self)
-        script, _ = _build_script(self)
-        return script
+        return self.signature
 
 
 # ----------------------------------------------------------------------
@@ -238,14 +248,15 @@ def _build_script(root: Node):
     lines: List[str] = []
 
     def rend(x):
-        return mapping[x] if isinstance(x, Node) else repr(x)
+        return mapping[x] if isinstance(x, Node) else _canonical(x)
 
     for n in order:
-        if n.signature in sig2var:
-            mapping[n] = sig2var[n.signature]
+        key = n.signature
+        if key in sig2var:
+            mapping[n] = sig2var[key]
             continue
         var = f"n{len(sig2var)}"
-        sig2var[n.signature] = var
+        sig2var[key] = var
         mapping[n] = var
         args_s = ", ".join(rend(a) for a in n.args)
         kw_s = ", ".join(f"{k}={rend(v)}" for k, v in n.kwargs.items())
@@ -256,9 +267,11 @@ def _build_script(root: Node):
     return "\n".join(lines), mapping
 
 
-def _render_expr(n: Node) -> str:
+def _render_expr(n: Node, *, canonical: bool = False) -> str:
     def rend(v: Any) -> str:
-        return _render_expr(v) if isinstance(v, Node) else repr(v)
+        if isinstance(v, Node):
+            return _render_expr(v, canonical=canonical)
+        return _canonical(v) if canonical else repr(v)
 
     args_s = ", ".join(rend(a) for a in n.args)
     kw_s = ", ".join(f"{k}={rend(v)}" for k, v in sorted(n.kwargs.items()))
