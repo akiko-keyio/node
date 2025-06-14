@@ -15,6 +15,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import inspect
+import functools
 import os
 import threading
 import time
@@ -508,6 +509,7 @@ class Flow:
             fn._node_ignore = ignore_set
             sig_obj = inspect.signature(fn)
 
+            @functools.wraps(fn)
             def wrapper(*args, **kwargs):
                 bound = sig_obj.bind_partial(*args, **kwargs)
                 for name, val in self.config.defaults(fn.__name__).items():
@@ -522,9 +524,12 @@ class Flow:
                 self._registry[node.signature] = node
                 return node
 
+            wrapper.__signature__ = sig_obj
             return wrapper
 
         return deco
+
+    task = node
 
     def run(self, root: Node):
         return self.engine.run(root)
