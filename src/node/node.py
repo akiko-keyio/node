@@ -35,6 +35,18 @@ from loguru import logger
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+_CONSOLE = Console()
+
+
+def _install_log_sink() -> None:
+    """Send loguru logs to the shared Console."""
+    logger.remove()
+    logger.add(lambda m: _CONSOLE.print(m, end=""), colorize=True, enqueue=True)
+
+
+_install_log_sink()
+
+
 
 # ----------------------------------------------------------------------
 # helpers
@@ -429,12 +441,14 @@ class Engine:
         progress = None
         tasks = None
         if self.log:
-            console = Console()
+
             progress = Progress(
                 TextColumn("{task.fields[signature]}", justify="left"),
                 SpinnerColumn(),
                 TextColumn("{task.fields[status]}", justify="right"),
-                console=console,
+
+                console=_CONSOLE,
+
                 refresh_per_second=5,
             )
             tasks = {
@@ -489,7 +503,9 @@ class Engine:
         if self.on_flow_end:
             self.on_flow_end(root, wall, self._exec_count)
         if self.log:
-            logger.info(f"Flow done: {self._exec_count}/{len(order)} tasks executed, wall {wall:.3f}s")
+            logger.info(
+                f"Flow done: {self._exec_count}/{len(order)} tasks executed, wall {wall:.3f}s"
+            )
         return self.cache.get(root.signature)[1]
 
 
