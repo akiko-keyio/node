@@ -33,9 +33,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
 from weakref import WeakValueDictionary  # ★ NEW
 
-import joblib
-from cachetools import LRUCache
-from filelock import FileLock
+import joblib  # type: ignore[import]
+from cachetools import LRUCache  # type: ignore[import]
+from filelock import FileLock  # type: ignore[import]
 
 __all__ = [
     "Cache",
@@ -337,36 +337,52 @@ def _render_call(
     return f"{fn.__name__}({', '.join(parts)})"
 
 
-def _build_script(root: Node):
+def _node_key(n: Node) -> str:
+    ignore = getattr(n.fn, "_node_ignore", ())
+    return getattr(n, "signature", None) or _render_call(
+        n.fn, n.args, n.kwargs, canonical=True, ignore=ignore
+    )
+
+
+def _plan_dag(
+    root: Node,
+) -> tuple[list[Node], dict[Node, str], dict[Node, str], set[Node]]:
     order = _topo_order(root)
     sig2var: Dict[str, str] = {}
     mapping: Dict[Node, str] = {}
-    lines: List[str] = []
-
+    calls: Dict[Node, str] = {}
+    dups: set[Node] = set()
     for n in order:
-        ignore = getattr(n.fn, "_node_ignore", ())
-        key = getattr(n, "signature", None) or _render_call(
-            n.fn, n.args, n.kwargs, canonical=True, ignore=ignore
-        )
+        key = _node_key(n)
         if key in sig2var:
             mapping[n] = sig2var[key]
-            if n is root:
-                lines.append(mapping[n])
-            continue
-
-        var = key if n is root else f"n{len(sig2var)}"
-        mapping[n] = var
-        if n is not root:
-            sig2var[key] = var
-        call = _render_call(
+            dups.add(n)
+        else:
+            mapping[n] = key if n is root else f"n{len(sig2var)}"
+            if n is not root:
+                sig2var[key] = mapping[n]
+        calls[n] = _render_call(
             n.fn,
             n.args,
             n.kwargs,
             canonical=True,
             mapping=mapping,
-            ignore=ignore,
+            ignore=getattr(n.fn, "_node_ignore", ()),
         )
-        lines.append(call if n is root else f"{var} = {call}")
+    return order, mapping, calls, dups
+
+
+def _build_script(root: Node):
+    order, mapping, calls, dups = _plan_dag(root)
+    lines: List[str] = []
+
+    for n in order:
+        if n in dups:
+            if n is root:
+                lines.append(mapping[n])
+            continue
+        call = calls[n]
+        lines.append(call if n is root else f"{mapping[n]} = {call}")
 
     return "\n".join(lines), mapping
 

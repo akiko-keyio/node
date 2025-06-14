@@ -1,4 +1,3 @@
-import pytest
 from node.node import Node, Flow, ChainCache, MemoryLRU, DiskJoblib
 
 
@@ -65,4 +64,3 @@ def test_signature_script_dedup():
         "n0 = add(x=1, y=2)",
         "add(x=n0, y=n0)",
     ]
-

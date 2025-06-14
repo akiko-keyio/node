@@ -1,9 +1,9 @@
 from pathlib import Path
 from contextlib import nullcontext
 
-import yaml
+import yaml  # type: ignore[import]
 import pytest
-import joblib
+import joblib  # type: ignore[import]
 from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
 
 
@@ -72,7 +72,9 @@ def test_cache_skips_execution(tmp_path):
 
 def test_defaults_override(tmp_path):
     conf = Config({"add": {"y": 5}})
-    flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+    flow = Flow(
+        config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False
+    )
 
     @flow.node()
     def add(x, y=1):
@@ -84,7 +86,9 @@ def test_defaults_override(tmp_path):
 
 def test_positional_args_ignore_config(tmp_path):
     conf = Config({"add": {"y": 5}})
-    flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+    flow = Flow(
+        config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False
+    )
 
     @flow.node()
     def add(x, y):
@@ -146,6 +150,7 @@ def test_linear_chain_repr(tmp_path):
 
     node = f1(f2(f3(1)))
     assert repr(node).strip() == "f1(a=f2(a=f3(a=1)))"
+
 
 def test_diamond_dependency(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
@@ -261,11 +266,17 @@ def test_chaincache_promotion(tmp_path):
 
 
 def test_parallel_execution(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), executor="thread", workers=2, log=False)
+    flow = Flow(
+        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
+        executor="thread",
+        workers=2,
+        log=False,
+    )
 
     @flow.node()
     def slow(v):
         import time
+
         time.sleep(0.2)
         return v
 
@@ -275,6 +286,7 @@ def test_parallel_execution(tmp_path):
 
     root = combine(slow(1), slow(2))
     import time
+
     t0 = time.perf_counter()
     assert flow.run(root) == 3
     elapsed = time.perf_counter() - t0
@@ -283,6 +295,7 @@ def test_parallel_execution(tmp_path):
 
 def test_cycle_detection():
     """Creating a node that depends on itself should raise."""
+
     def ident(x):
         return x
 
@@ -474,4 +487,3 @@ def test_default_reporter(tmp_path):
     assert flow.run(node, reporter=extra) == 3
     assert reporter.count == 1
     assert extra.count == 1
-

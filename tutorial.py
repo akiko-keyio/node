@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-import yaml
+import yaml  # type: ignore[import]
 
 from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
 
@@ -39,14 +39,12 @@ def inc(x: int) -> int:
 
 
 def main() -> None:
-    node = square(add(square(2),square(2)))
-    result = flow.run(node)
+    node = square(add(square(2), square(2)))
+    print(flow.run(node))
     print(node)
-    node=square(add(square(2), square(3)))
-    result = flow.run(node)
+    node = square(add(square(2), square(3)))
+    print(flow.run(node))
     print(node)
-
-
 
 
 if __name__ == "__main__":
