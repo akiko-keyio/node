@@ -369,3 +369,18 @@ def test_cache_fallback_hash(tmp_path, monkeypatch):
     assert pkl.exists()
     assert pkl.with_suffix(".py").exists()
 
+
+def test_ignore_signature_fields(tmp_path):
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task(ignore=["large_df", "model"])
+    def add(x, y, large_df=None, model=None):
+        return x + y
+
+    n1 = add(1, 2, large_df=[1, 2], model="a")
+    n2 = add(1, 2, large_df=[3, 4], model="b")
+
+    assert n1 is n2
+    assert n1.signature == "add(x=1, y=2)"
+    assert flow.run(n1) == 3
+
