@@ -79,6 +79,11 @@ class _RichReporterCtx:
     def __exit__(self, exc_type, exc, tb):
         self._stop_event.set()
         self._t.join()
+        if self.engine._exec_count == 0:
+            for n in self.nodes:
+                if self.status[n][0] == "Pending":
+                    self.status[n][0] = "Skipped"
+            self.live.update(self.render())
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
