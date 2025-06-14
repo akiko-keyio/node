@@ -523,8 +523,17 @@ class Flow:
 
     task = node
 
-    def run(self, root: Node):
-        return self.engine.run(root)
+    def run(self, root: Node, *, reporter=None):
+        """Run the DAG rooted at ``root``.
+
+        If ``reporter`` is provided, it should be an object with an
+        ``attach(engine, root)`` method returning a context manager
+        that hooks into execution callbacks.
+        """
+        if reporter is None:
+            return self.engine.run(root)
+        with reporter.attach(self.engine, root):
+            return self.engine.run(root)
 
     def generate(self, root: Node) -> None:
         """Compute and cache ``root`` without returning the value."""
