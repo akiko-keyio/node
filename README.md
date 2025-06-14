@@ -1,18 +1,27 @@
 # Node
 
-Node 是一个轻量级的 DAG 流程库，提供内存和磁盘两级缓存以加速计算。
+Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型项目中快速组织多步计算。它通过兩級缓存加速执行，并提供直观的脚本表示，方便调试和分享。
+
+## 功能特性
+
+- **任务装饰器**：普通函数经 `@flow.task()` 包装后即可组成 DAG。
+- **两级缓存**：默认同时启用内存 LRU 与磁盘缓存，避免重复计算。
+- **并行执行**：支持线程或进程池，`workers` 参数控制并发量。
+- **脚本表示**：任意节点的 `repr()` 都会生成等效的 Python 调用脚本。
+- **配置系统**：通过 `Config` 对象集中管理任务默认参数，支持从 YAML 加载。
+- **回调钩子**：`on_node_end` 与 `on_flow_end` 可用来收集日志或统计信息。
 
 ## 安装
 
-建议在虚拟环境中安装。克隆本仓库后执行：
+推荐在虚拟环境中执行：
 
 ```bash
 pip install -e .
 ```
 
-## 快速开始
+项目依赖见 `pyproject.toml`，Python 版本需 >=3.10。
 
-创建 `Flow`，将普通函数包装成任务并构建 DAG，最后运行：
+## 快速开始
 
 ```python
 from node.node import Flow
@@ -33,7 +42,7 @@ print(result)  # 25
 
 ## 查看脚本
 
-每个节点对象在 `repr` 时都会生成等效的执行脚本，便于调试和分享：
+节点的 `repr` 形式即完整的执行脚本，便于复制和排查：
 
 ```python
 root = square(add(2, 3))
@@ -43,21 +52,19 @@ print(repr(root))
 
 ## 缓存与并行
 
-Flow 默认使用 `MemoryLRU` 和 `DiskJoblib` 存储结果，缓存键即节点的 `signature` 字符串。你可以给定 `ChainCache`，也可通过 `executor` 和 `workers` 控制并行计算量。
+`Flow` 默认使用 `MemoryLRU` 和 `DiskJoblib` 组合成 `ChainCache`。缓存键即节点的 `signature` 字符串，磁盘缓存会以函数名创建子目录并尝试使用表达式作为文件名。这里的 `signature` 指节点的唯一字符串标识，由函数名及其参数构成，例如 `add(x=2, y=3)`：
 
 ```python
 from node.node import Flow, ChainCache, MemoryLRU, DiskJoblib
 
 flow = Flow(
     cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
-    executor="thread",
+    executor="thread",  # 或 "process"
     workers=4,
 )
 ```
 
-`DiskJoblib` 会以函数名创建子目录，优先将结果保存为 `<expr>.pkl`，其中
-`<expr>` 就是节点的 `signature` 字符串。若该文件名不可用（过长或含非法字符），
-则退回保存为 `<hash>.pkl`，并在同目录写入 `<hash>.py` 记录 `repr(node)` 以便查看。例如运行 `tutorial.py` 后可能会看到：
+若表达式不适合作文件名，会回退到哈希值，并在同目录生成 `.py` 文件记录脚本。例如运行 `tutorial.py` 后可能出现：
 
 ```
 .cache/inc/inc(x=3).pkl
@@ -65,12 +72,9 @@ flow = Flow(
 .cache/add/8be18ab9a193dbbc86b394bac923ab03.py
 ```
 
-第一个文件使用表达式命名，第二个文件因为名称不合法或过长而使用哈希值。
-
-
 ## 配置对象
 
-可以给 `Flow` 传入 `Config` 实例，以集中管理任务的默认参数。配置通常来自一个 YAML 文件：
+使用 `Config` 管理任务默认参数：
 
 ```python
 import yaml
@@ -82,35 +86,28 @@ with open("defaults.yml") as f:
 flow = Flow(config=Config(defaults))
 ```
 
+示例 `defaults.yml`：
+
 ```yaml
-# defaults.yml
 add:
   y: 5
 ```
 
-项目的测试目录中也包含 `tests/config.yaml` 作为参考。
+测试目录中的 `tests/config.yaml` 亦可参考。
 
 ## 教程脚本
 
-阅读并运行 `tutorial.py` 可以查看完整的示例，包括：
+`tutorial.py` 演示了完整工作流，包括：
 
-1. 构建和运行简单的 DAG；
-2. 从 YAML 中加载任务默认参数；
-3. 在磁盘上查看缓存文件的命名方式以及生成的 `.py` 脚本。
+1. 构建并运行 DAG；
+2. 从 YAML 加载默认参数；
+3. 查看磁盘缓存文件及生成的 `.py` 脚本。
 
-执行：
+运行：
 
 ```bash
 python tutorial.py
 ```
 
-日志会展示每个任务的执行及缓存情况。
+日志会展示每个任务的执行时间与缓存命中情况。
 
-## 运行测试
-
-确保你已安装完所需依赖，在项目根目录下运行:
-
-```bash
-pytest
-```
-全部 21 个测试通过即表示环境配置正确。
