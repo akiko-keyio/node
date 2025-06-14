@@ -12,7 +12,6 @@ import yaml
 
 from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
 
-
 yaml_text = """
 add:
   y: 5
@@ -24,43 +23,31 @@ flow = Flow(
 )
 
 
-@flow.task()
+@flow.node()
 def add(x: int, y: int) -> int:
     return x + y
 
 
-@flow.task()
+@flow.node()
 def square(z: int) -> int:
     return z * z
 
 
-@flow.task()
+@flow.node()
 def inc(x: int) -> int:
     return x + 1
 
 
 def main() -> None:
-    node = square(add(square(square(2)), y=square(square(2))))
+    node = square(add(square(2),square(2)))
     result = flow.run(node)
-    print(node, result)
+    print(node)
+    node=square(add(square(2), square(3)))
+    result = flow.run(node)
+    print(node)
 
-    result_cfg = flow.run(add(x=2))
-    print("from config:", result_cfg)
-
-    n = inc(3)
-    print("cached:", flow.run(n))
-
-    # 查看生成的缓存文件名和使用的缓存键
-    print("signature:", n.signature)
-    disk = next(c for c in flow.engine.cache.caches if isinstance(c, DiskJoblib))
-
-    p = disk._expr_path(n.signature)
-    if not p.exists():
-        p = disk._hash_path(n.signature)
-    print("file saved as", p)
 
 
 
 if __name__ == "__main__":
     main()
-

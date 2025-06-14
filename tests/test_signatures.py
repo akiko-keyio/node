@@ -5,11 +5,11 @@ from node.node import Node, Flow, ChainCache, MemoryLRU, DiskJoblib
 def test_repr_matches_signature(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def square(z):
         return z * z
 
@@ -24,11 +24,11 @@ def test_branch_no_diamond(tmp_path):
     """Branching without shared nodes should not expand to a script."""
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def square(z):
         return z * z
 

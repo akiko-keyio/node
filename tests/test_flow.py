@@ -9,11 +9,11 @@ from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
 def test_flow_example(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def square(z):
         return z * z
 
@@ -55,7 +55,7 @@ def test_cache_skips_execution(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
 
-    @flow.task()
+    @flow.node()
     def double(x):
         calls.append(x)
         return x * 2
@@ -73,7 +73,7 @@ def test_defaults_override(tmp_path):
     conf = Config({"add": {"y": 5}})
     flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y=1):
         return x + y
 
@@ -85,7 +85,7 @@ def test_positional_args_ignore_config(tmp_path):
     conf = Config({"add": {"y": 5}})
     flow = Flow(config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
@@ -104,7 +104,7 @@ def test_config_from_yaml(tmp_path):
         log=False,
     )
 
-    @flow.task()
+    @flow.node()
     def add(x, y=1):
         return x + y
 
@@ -115,11 +115,11 @@ def test_config_from_yaml(tmp_path):
 def test_build_script_repr(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def square(z):
         return z * z
 
@@ -131,15 +131,15 @@ def test_build_script_repr(tmp_path):
 def test_linear_chain_repr(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def f1(a):
         return a
 
-    @flow.task()
+    @flow.node()
     def f2(a):
         return a
 
-    @flow.task()
+    @flow.node()
     def f3(a):
         return a
 
@@ -150,22 +150,22 @@ def test_diamond_dependency(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
 
-    @flow.task()
+    @flow.node()
     def base(x):
         calls.append("base")
         return x + 1
 
-    @flow.task()
+    @flow.node()
     def left(a):
         calls.append("left")
         return a * 2
 
-    @flow.task()
+    @flow.node()
     def right(a):
         calls.append("right")
         return a + 3
 
-    @flow.task()
+    @flow.node()
     def final(x, y):
         calls.append("final")
         return x + y
@@ -190,7 +190,7 @@ def test_diamond_dependency(tmp_path):
 def test_node_deduplication(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
@@ -203,11 +203,11 @@ def test_repr_shared_nodes(tmp_path):
     """repr should reuse the same variable for identical nodes."""
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def combine(a, b):
         return a + b
 
@@ -223,7 +223,7 @@ def test_set_canonicalization(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
 
-    @flow.task()
+    @flow.node()
     def identity(x):
         calls.append(1)
         return x
@@ -244,7 +244,7 @@ def test_chaincache_promotion(tmp_path):
     disk = DiskJoblib(tmp_path)
     flow = Flow(cache=ChainCache([mem, disk]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
@@ -262,13 +262,13 @@ def test_chaincache_promotion(tmp_path):
 def test_parallel_execution(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), executor="thread", workers=2, log=False)
 
-    @flow.task()
+    @flow.node()
     def slow(v):
         import time
         time.sleep(0.2)
         return v
 
-    @flow.task()
+    @flow.node()
     def combine(a, b):
         return a + b
 
@@ -293,7 +293,7 @@ def test_cycle_detection():
 def test_dict_canonicalization(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def ident(x):
         return x
 
@@ -320,7 +320,7 @@ def test_callbacks_invoked(tmp_path):
     flow.engine.on_node_end = on_node_end
     flow.engine.on_flow_end = on_flow_end
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
@@ -337,19 +337,19 @@ def test_cache_scripts(tmp_path):
     disk = DiskJoblib(tmp_path)
     flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
 
-    @flow.task()
+    @flow.node()
     def base(x):
         return x + 1
 
-    @flow.task()
+    @flow.node()
     def left(a):
         return a * 2
 
-    @flow.task()
+    @flow.node()
     def right(a):
         return a + 3
 
-    @flow.task()
+    @flow.node()
     def final(x, y):
         return x + y
 
@@ -375,7 +375,7 @@ def test_cache_fallback_hash(tmp_path, monkeypatch):
     disk = DiskJoblib(tmp_path)
     flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
 
-    @flow.task()
+    @flow.node()
     def inc(x):
         return x + 1
 

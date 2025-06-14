@@ -28,17 +28,20 @@ from node.node import Flow
 
 flow = Flow()
 
-@flow.task()
+
+@flow.node()
 def add(x, y):
     return x + y
 
-@flow.task()
+
+@flow.node()
 def square(z):
     return z * z
 
 @flow.task(ignore=["large_df", "model"])
 def train(x, y, large_df, model):
     return x + y
+
 
 result = flow.run(square(add(2, 3)))
 print(result)  # 25

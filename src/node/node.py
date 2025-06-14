@@ -107,12 +107,9 @@ class DiskJoblib(Cache):
 
     def _subdir(self, key: str) -> Path:
         """Return the directory corresponding to the node's function name."""
-        lines = key.strip().splitlines()
-        call_line = lines[-2] if len(lines) >= 2 else lines[0]
-        if " = " in call_line:
-            call_line = call_line.split(" = ", 1)[1]
-        fn = call_line.split("(", 1)[0]
-        sub = self.root / fn
+        lines = key.strip().splitlines()[-1]
+        fn_name = lines.split("(", 1)[0]
+        sub = self.root / fn_name
         sub.mkdir(parents=True, exist_ok=True)
         return sub
 
@@ -504,7 +501,7 @@ class Flow:
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
 
-    def task(self, *, ignore: Sequence[str] | None = None):
+    def node(self, *, ignore: Sequence[str] | None = None):
         ignore_set = set(ignore or [])
 
         def deco(fn):
