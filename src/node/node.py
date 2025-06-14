@@ -397,15 +397,16 @@ class Engine:
         return v
 
     def _eval_node(self, n: Node):
+        start = time.perf_counter()
         if self.on_node_start:
             self.on_node_start(n)
         hit, val = self.cache.get(n.signature)
         if hit:
+            dur = time.perf_counter() - start
             if self.on_node_end:
-                self.on_node_end(n, 0.0, True)
+                self.on_node_end(n, dur, True)
             return val
 
-        start = time.perf_counter()
         args = [self._resolve(a) for a in n.args]
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         val = n.fn(*args, **kwargs)
@@ -488,11 +489,13 @@ class Flow:
         executor: str = "thread",
         workers: int | None = None,
         log: bool = True,
+        reporter=None,
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
+        self.reporter = reporter
 
     def node(self, *, ignore: Sequence[str] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
@@ -530,6 +533,8 @@ class Flow:
         ``attach(engine, root)`` method returning a context manager
         that hooks into execution callbacks.
         """
+        if reporter is None:
+            reporter = self.reporter
         if reporter is None:
             return self.engine.run(root)
         with reporter.attach(self.engine, root):

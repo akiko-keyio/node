@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import nullcontext
 
 import yaml
 import pytest
@@ -442,4 +443,35 @@ def test_delete_cache(tmp_path):
 
     assert flow.run(node) == 3
     assert calls == [1, 1]
+
+
+def test_default_reporter(tmp_path):
+    class DummyReporter:
+        def __init__(self):
+            self.count = 0
+
+        def attach(self, engine, root):
+            self.count += 1
+            return nullcontext()
+
+    reporter = DummyReporter()
+    flow = Flow(
+        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
+        reporter=reporter,
+        log=False,
+    )
+
+    @flow.node()
+    def add(x, y):
+        return x + y
+
+    node = add(1, 2)
+    assert flow.run(node) == 3
+    assert reporter.count == 1
+
+    node.delete_cache()
+    extra = DummyReporter()
+    assert flow.run(node, reporter=extra) == 3
+    assert reporter.count == 1
+    assert extra.count == 1
 
