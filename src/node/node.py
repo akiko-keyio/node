@@ -228,6 +228,12 @@ class Node:
             raise RuntimeError("Node has no associated Flow")
         return self.flow.run(self)
 
+    def generate(self) -> None:
+        """Compute and cache this node without returning the value."""
+        if self.flow is None:
+            raise RuntimeError("Node has no associated Flow")
+        self.flow.generate(self)
+
 
 # ----------------------------------------------------------------------
 # DAG helpers
@@ -496,6 +502,10 @@ class Flow:
 
     def run(self, root: Node):
         return self.engine.run(root)
+
+    def generate(self, root: Node) -> None:
+        """Compute and cache ``root`` without returning the value."""
+        self.engine.run(root)
 
 
 # ----------------------------------------------------------------------
