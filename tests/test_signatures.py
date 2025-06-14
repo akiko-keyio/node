@@ -63,7 +63,6 @@ def test_signature_script_dedup():
     lines = root.signature.strip().splitlines()
     assert lines == [
         "n0 = add(x=1, y=2)",
-        "n1 = add(x=n0, y=n0)",
-        "n1",
+        "add(x=n0, y=n0)",
     ]
 
