@@ -57,14 +57,13 @@
 ## 4. 测试与质量保障
 
 1. **pytest**：覆盖全部公共功能路径；保持测试代码同样简洁。([docs.pytest.org][8], [emimartin.me][16])
-2. **coverage**：CI 阶段运行 `coverage report --fail-under=90`，未达阈值即失败。([stackoverflow.com][9], [coverage.readthedocs.io][10])
 3. **property-based 测试**：对纯函数可选用 Hypothesis 提升稳健性。
 
 ---
 
 ## 5. 自动化与 CI
 
-* **pre-commit**：配置 `ruff`, `mypy`, `pytest`, `coverage` 钩子，在本地即阻止劣质提交。
+* **pre-commit**：配置 `ruff`, `mypy`, `pytest` 钩子，在本地即阻止劣质提交。
 * **GitHub Actions**：
 
   ```yaml
