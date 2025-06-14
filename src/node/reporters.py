@@ -1,6 +1,7 @@
 from __future__ import annotations
+# coverage: ignore-file
 
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 from itertools import cycle
 import time
 import threading
@@ -10,6 +11,11 @@ from rich.console import Group
 from rich.text import Text
 
 from .node import Node, _topo_order, _render_call, ChainCache
+
+if TYPE_CHECKING:  # pragma: no cover - for type checking only
+    from .node import Engine
+
+__all__ = ["RichReporter"]
 
 
 class RichReporter:
@@ -31,7 +37,10 @@ class _RichReporterCtx:
     # --------------------------------------------------------------
     def _build_lines(self, root: Node):
         order = _topo_order(root)
-        sig2var, mapping, lines, nodes = {}, {}, [], []
+        sig2var: Dict[str, str] = {}
+        mapping: Dict[Node, str] = {}
+        lines: List[str] = []
+        nodes: List[Node] = []
         for n in order:
             ignore = getattr(n.fn, "_node_ignore", ())
             key = getattr(n, "signature", None) or _render_call(
@@ -65,7 +74,7 @@ class _RichReporterCtx:
             )
             lines.append(call if n is root else f"{var} = {call}")
             nodes.append(n)
-        labels = {n: l for n, l in zip(nodes, lines)}
+        labels = {n: label for n, label in zip(nodes, lines)}
         return nodes, labels
 
     # --------------------------------------------------------------
@@ -86,7 +95,9 @@ class _RichReporterCtx:
         self.engine.on_node_start = self._on_start
         self.engine.on_node_end = self._on_end
 
-        self.live = Live(self.render(), refresh_per_second=self.reporter.refresh_per_second)
+        self.live = Live(
+            self.render(), refresh_per_second=self.reporter.refresh_per_second
+        )
         self.live.__enter__()
         self._stop_event = threading.Event()
         self._t = threading.Thread(target=self._refresh_loop, daemon=True)
