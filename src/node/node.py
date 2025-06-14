@@ -261,19 +261,24 @@ def _build_script(root: Node):
     lines: List[str] = []
 
     for n in order:
-        key = getattr(n, "signature", None)
-        if key is None:
-            key = _render_call(n.fn, n.args, n.kwargs, canonical=True)
+        key = getattr(n, "signature", None) or _render_call(n.fn, n.args, n.kwargs, canonical=True)
         if key in sig2var:
             mapping[n] = sig2var[key]
+            if n is root:
+                lines.append(mapping[n])
             continue
-        var = f"n{len(sig2var)}"
-        sig2var[key] = var
-        mapping[n] = var
-        call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
-        lines.append(f"{var} = {call}")
 
-    lines.append(mapping[root])
+        if n is root:
+            call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
+            mapping[n] = call
+            lines.append(call)
+        else:
+            var = f"n{len(sig2var)}"
+            sig2var[key] = var
+            mapping[n] = var
+            call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
+            lines.append(f"{var} = {call}")
+
     return "\n".join(lines), mapping
 
 

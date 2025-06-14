@@ -185,8 +185,7 @@ def test_repr_shared_nodes(tmp_path):
     script = repr(node).strip().splitlines()
     assert script == [
         "n0 = add(x=1, y=2)",
-        "n1 = combine(a=n0, b=n0)",
-        "n1",
+        "combine(a=n0, b=n0)",
     ]
 
 
