@@ -21,7 +21,12 @@ import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from contextlib import nullcontext, suppress
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -32,7 +37,15 @@ import joblib
 from cachetools import LRUCache
 from filelock import FileLock
 
-
+__all__ = [
+    "Cache",
+    "MemoryLRU",
+    "DiskJoblib",
+    "ChainCache",
+    "Node",
+    "Config",
+    "Flow",
+]
 
 
 # ----------------------------------------------------------------------
@@ -65,25 +78,34 @@ def _canonical(obj: Any) -> str:
 # cache abstractions
 # ----------------------------------------------------------------------
 class Cache:
-    def get(self, key: str) -> Tuple[bool, Any]: ...
-    def put(self, key: str, value: Any) -> None: ...
-    def delete(self, key: str) -> None: ...
+    def get(self, key: str) -> Tuple[bool, Any]:
+        raise NotImplementedError
+
+    def put(self, key: str, value: Any) -> None:
+        raise NotImplementedError
+
+    def delete(self, key: str) -> None:
+        raise NotImplementedError
+
+    def save_script(self, node: "Node") -> None:
+        pass
 
 
 class MemoryLRU(Cache):
     """Thread-safe in-memory LRU cache."""
+
     def __init__(self, maxsize: int = 512):
         self._lru: LRUCache[str, Any] = LRUCache(maxsize=maxsize)
         self._lock = threading.Lock()  # ★ NEW
 
     def get(self, key: str):
-        with self._lock:                       # ★ NEW
+        with self._lock:  # ★ NEW
             if key in self._lru:
                 return True, self._lru[key]
         return False, MISS
 
     def put(self, key: str, value: Any):
-        with self._lock:                       # ★ NEW
+        with self._lock:  # ★ NEW
             self._lru[key] = value
 
     def delete(self, key: str) -> None:
@@ -93,7 +115,7 @@ class MemoryLRU(Cache):
 
 class DiskJoblib(Cache):
     """Filesystem cache using joblib pickles.
-    
+
     Results are stored under ``<func>/<expr>.pkl`` whenever possible.  If the
     expression cannot be used as a file name, the fallback ``<hash>.pkl`` is
     used and ``<hash>.py`` contains ``repr(node)`` for inspection.
@@ -121,7 +143,6 @@ class DiskJoblib(Cache):
     def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
         md = hashlib.md5(key.encode()).hexdigest()
         return self._subdir(key) / (md + ext)
-
 
     def get(self, key: str):
         p = self._expr_path(key)
@@ -154,7 +175,7 @@ class DiskJoblib(Cache):
             if p.exists():
                 with suppress(OSError):
                     p.unlink()
-        py = hash_p.with_suffix('.py')
+        py = hash_p.with_suffix(".py")
         if py.exists():
             with suppress(OSError):
                 py.unlink()
@@ -168,12 +189,13 @@ class DiskJoblib(Cache):
 
 class ChainCache(Cache):
     """Chain several caches (e.g. Memory → Disk)."""
+
     def __init__(self, caches: Sequence[Cache]):
         self.caches = list(caches)
         self._lock = threading.Lock()  # ★ NEW
 
     def get(self, key: str):
-        with self._lock:               # ★ NEW – protects promotion
+        with self._lock:  # ★ NEW – protects promotion
             for i, c in enumerate(self.caches):
                 hit, val = c.get(key)
                 if hit:
@@ -212,7 +234,12 @@ class Node:
     )
 
     def __init__(
-        self, fn, args: Tuple = (), kwargs: Dict | None = None, *, flow: "Flow" | None = None
+        self,
+        fn,
+        args: Tuple = (),
+        kwargs: Dict | None = None,
+        *,
+        flow: "Flow" | None = None,
     ):
         self.fn = fn
         self.args = tuple(args)
@@ -262,7 +289,6 @@ class Node:
         self.flow.generate(self)
 
 
-
 # ----------------------------------------------------------------------
 # DAG helpers
 # ----------------------------------------------------------------------
@@ -290,31 +316,32 @@ def _render_call(
 ) -> str:
     """Render a function call with argument names."""
 
-    render = lambda v: (
-        mapping[v]
-        if isinstance(v, Node) and mapping
-        else _render_call(
-            v.fn,
-            v.args,
-            v.kwargs,
-            canonical=canonical,
-            ignore=getattr(v.fn, "_node_ignore", ()),
-        )
-        if isinstance(v, Node)
-        else _canonical(v)
-        if canonical
-        else repr(v)
-    )
+    def render(v: Any) -> str:
+        if isinstance(v, Node):
+            if mapping:
+                return mapping[v]
+            return _render_call(
+                v.fn,
+                v.args,
+                v.kwargs,
+                canonical=canonical,
+                ignore=getattr(v.fn, "_node_ignore", ()),
+            )
+        return _canonical(v) if canonical else repr(v)
 
     bound = inspect.signature(fn).bind_partial(*args, **kwargs)
     ignore_set = set(ignore or ())
-    parts = [f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set]
+    parts = [
+        f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set
+    ]
     return f"{fn.__name__}({', '.join(parts)})"
 
 
 def _build_script(root: Node):
     order = _topo_order(root)
-    sig2var, mapping, lines = {}, {}, []
+    sig2var: Dict[str, str] = {}
+    mapping: Dict[Node, str] = {}
+    lines: List[str] = []
 
     for n in order:
         ignore = getattr(n.fn, "_node_ignore", ())
@@ -347,7 +374,9 @@ def _build_script(root: Node):
 def _is_linear_chain(root: Node) -> bool:
     """Return ``True`` if the graph rooted at ``root`` has no diamond dependencies."""
 
-    indeg, seen, stack = defaultdict(int), set(), [root]
+    indeg: Dict[str, int] = defaultdict(int)
+    seen: set[Node] = set()
+    stack = [root]
     while stack:
         n = stack.pop()
         if n in seen:
@@ -376,7 +405,6 @@ class Engine:
         on_node_end: Callable[[Node, float, bool], None] | None = None,
         on_flow_end: Callable[[Node, float, int], None] | None = None,
     ):
-
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
         self.executor = executor
         self.workers = workers or (os.cpu_count() or 4)
@@ -440,12 +468,15 @@ class Engine:
         self.on_node_start = start_cb
         self.on_node_end = end_cb
 
-        pool_cls = ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
+        pool_cls = (
+            ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
+        )
         ts = TopologicalSorter({n: n.deps for n in order})
         ts.prepare()
 
         fut_map = {}
         with pool_cls(max_workers=self.workers) as pool:
+
             def submit(node):
                 fut_map[pool.submit(self._eval_node, node)] = node
 
@@ -497,11 +528,13 @@ class Flow:
         self.log = log
         self.reporter = reporter
 
-    def node(self, *, ignore: Sequence[str] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
+    def node(
+        self, *, ignore: Sequence[str] | None = None
+    ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
 
         def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
-            fn._node_ignore = ignore_set
+            setattr(fn, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
             sig_obj = inspect.signature(fn)
 
             @functools.wraps(fn)
@@ -519,7 +552,7 @@ class Flow:
                 self._registry[node.signature] = node
                 return node
 
-            wrapper.__signature__ = sig_obj
+            wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
             return wrapper
 
         return deco
