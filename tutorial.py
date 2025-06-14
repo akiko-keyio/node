@@ -1,51 +1,90 @@
-"""示例脚本
-================
+"""Node usage tutorial
+====================
 
-本脚本展示如何使用 Node 库构建简单的 DAG、
-从 YAML 加载默认参数以及查看磁盘缓存位置。
-计算结果会以节点的 ``signature`` 字符串作为缓存键。
+This single script combines the previous ``tutorial.py`` and
+``execution_status.py`` examples.  It first walks through a quick start and
+then demonstrates advanced features such as ``repr`` generation, caching,
+concurrency and live reporting.
 """
 
 from __future__ import annotations
 
+import time
 import yaml  # type: ignore[import]
 
 from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
+from node.reporters import RichReporter
 
+
+# --------------------------------------------------------------
+# Quick start
+# --------------------------------------------------------------
+quick = Flow()
+
+
+@quick.node()
+def add(x: int, y: int) -> int:
+    return x + y
+
+
+@quick.node()
+def square(z: int) -> int:
+    return z * z
+
+
+def quick_start() -> None:
+    root = square(add(2, 3))
+    print("Quick result:", quick.run(root))
+    print("repr(root) =", repr(root))
+
+
+# --------------------------------------------------------------
+# Advanced topics
+# --------------------------------------------------------------
 yaml_text = """
 add:
   y: 5
 """
 
-flow = Flow(
+advanced = Flow(
     cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
     config=Config(yaml.safe_load(yaml_text)),
+    executor="thread",
+    workers=2,
 )
 
 
-@flow.node()
-def add(x: int, y: int) -> int:
+@advanced.node()
+def slow_add(x: int, y: int) -> int:
+    time.sleep(2)
     return x + y
 
 
-@flow.node()
-def square(z: int) -> int:
-    return z * z
+@advanced.node()
+def slow_square(x: int) -> int:
+    time.sleep(3)
+    return x * x
 
 
-@flow.node()
+@advanced.node()
 def inc(x: int) -> int:
+    time.sleep(0.2)
     return x + 1
 
 
-def main() -> None:
-    node = square(add(square(2), square(2)))
-    print(flow.run(node))
-    print(node)
-    node = square(add(square(2), square(3)))
-    print(flow.run(node))
-    print(node)
+def advanced_topics() -> None:
+    root = slow_square(slow_add(slow_square(2), slow_square(2)))
+    reporter = RichReporter()
+    result = advanced.run(root, reporter=reporter)
+    print("Advanced result:", result)
+    print("repr(root) =", repr(root))
+
+    start = time.perf_counter()
+    advanced.run(root, reporter=reporter)
+    elapsed = time.perf_counter() - start
+    print(f"Second run from cache: {elapsed:.2f}s")
 
 
 if __name__ == "__main__":
-    main()
+    quick_start()
+    advanced_topics()
