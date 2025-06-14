@@ -47,6 +47,7 @@ def _install_log_sink() -> None:
 _install_log_sink()
 
 
+
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
@@ -440,11 +441,14 @@ class Engine:
         progress = None
         tasks = None
         if self.log:
+
             progress = Progress(
                 TextColumn("{task.fields[signature]}", justify="left"),
                 SpinnerColumn(),
                 TextColumn("{task.fields[status]}", justify="right"),
+
                 console=_CONSOLE,
+
                 refresh_per_second=5,
             )
             tasks = {
