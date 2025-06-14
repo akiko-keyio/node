@@ -403,6 +403,7 @@ class Engine:
         self.log = log
         self.on_node_end = on_node_end
         self.on_flow_end = on_flow_end
+        self._can_save = hasattr(self.cache, "save_script")
 
         self._exec_count = 0
         self._lock = threading.Lock()
@@ -426,7 +427,7 @@ class Engine:
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         val = n.fn(*args, **kwargs)
         self.cache.put(n.signature, val)
-        if hasattr(self.cache, "save_script"):
+        if self._can_save:
             self.cache.save_script(n)
         dur = time.perf_counter() - start
         if self.on_node_end:
@@ -441,32 +442,26 @@ class Engine:
         t0 = time.perf_counter()
         order = _topo_order(root)
 
-        indeg = {n: len(n.deps) for n in order}
-        succ = defaultdict(list)
-        for n in order:
-            for d in n.deps:
-                succ[d].append(n)
-
-        ready = sorted((n for n, d in indeg.items() if d == 0), key=lambda x: x.signature)
-        fut_map = {}
         pool_cls = ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
+        ts = TopologicalSorter({n: n.deps for n in order})
+        ts.prepare()
 
+        fut_map = {}
         with pool_cls(max_workers=self.workers) as pool:
             def submit(node):
                 fut_map[pool.submit(self._eval_node, node)] = node
 
-            for n in ready:
+            for n in ts.get_ready():
                 submit(n)
 
             while fut_map:
                 done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
                 for fut in done:
                     node = fut_map.pop(fut)
-                    fut.result()          # re-raise errors immediately
-                    for nxt in succ[node]:
-                        indeg[nxt] -= 1
-                        if indeg[nxt] == 0:
-                            submit(nxt)
+                    fut.result()  # re-raise errors immediately
+                    ts.done(node)
+                for n in ts.get_ready():
+                    submit(n)
 
         wall = time.perf_counter() - t0
         if self.on_flow_end:
