@@ -186,13 +186,17 @@ class Node:
         "kwargs",
         "deps",
         "signature",
+        "flow",
         "__weakref__",
     )
 
-    def __init__(self, fn, args: Tuple = (), kwargs: Dict | None = None):
+    def __init__(
+        self, fn, args: Tuple = (), kwargs: Dict | None = None, *, flow: "Flow" | None = None
+    ):
         self.fn = fn
         self.args = tuple(args)
         self.kwargs = kwargs or {}
+        self.flow = flow
 
         self.deps: List[Node] = [
             *(a for a in self.args if isinstance(a, Node)),
@@ -218,6 +222,11 @@ class Node:
 
     def __repr__(self):
         return self.signature
+
+    def get(self):
+        if self.flow is None:
+            raise RuntimeError("Node has no associated Flow")
+        return self.flow.run(self)
 
 
 # ----------------------------------------------------------------------
@@ -474,7 +483,7 @@ class Flow:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(fn, bound.args, bound.kwargs)
+                node = Node(fn, bound.args, bound.kwargs, flow=self)
                 cached = self._registry.get(node.signature)
                 if cached is not None:
                     return cached
