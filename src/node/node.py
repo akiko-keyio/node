@@ -47,6 +47,8 @@ __all__ = [
     "Flow",
 ]
 
+from src.node.reporters import RichReporter
+
 
 # ----------------------------------------------------------------------
 # helpers
@@ -234,12 +236,12 @@ class Node:
     )
 
     def __init__(
-        self,
-        fn,
-        args: Tuple = (),
-        kwargs: Dict | None = None,
-        *,
-        flow: "Flow" | None = None,
+            self,
+            fn,
+            args: Tuple = (),
+            kwargs: Dict | None = None,
+            *,
+            flow: "Flow" | None = None,
     ):
         self.fn = fn
         self.args = tuple(args)
@@ -306,13 +308,13 @@ def _topo_order(root: Node):
 
 
 def _render_call(
-    fn: Callable,
-    args: Sequence[Any],
-    kwargs: Mapping[str, Any],
-    *,
-    canonical: bool = False,
-    mapping: Dict[Node, str] | None = None,
-    ignore: Sequence[str] | None = None,
+        fn: Callable,
+        args: Sequence[Any],
+        kwargs: Mapping[str, Any],
+        *,
+        canonical: bool = False,
+        mapping: Dict[Node, str] | None = None,
+        ignore: Sequence[str] | None = None,
 ) -> str:
     """Render a function call with argument names."""
 
@@ -345,7 +347,7 @@ def _node_key(n: Node) -> str:
 
 
 def _plan_dag(
-    root: Node,
+        root: Node,
 ) -> tuple[list[Node], dict[Node, str], dict[Node, str], set[Node]]:
     order = _topo_order(root)
     sig2var: Dict[str, str] = {}
@@ -411,15 +413,15 @@ def _is_linear_chain(root: Node) -> bool:
 # ----------------------------------------------------------------------
 class Engine:
     def __init__(
-        self,
-        cache: Cache | None = None,
-        *,
-        executor: str = "thread",
-        workers: int | None = None,
-        log: bool = True,
-        on_node_start: Callable[[Node], None] | None = None,
-        on_node_end: Callable[[Node, float, bool], None] | None = None,
-        on_flow_end: Callable[[Node, float, int], None] | None = None,
+            self,
+            cache: Cache | None = None,
+            *,
+            executor: str = "thread",
+            workers: int | None = None,
+            log: bool = True,
+            on_node_start: Callable[[Node], None] | None = None,
+            on_node_end: Callable[[Node, float, bool], None] | None = None,
+            on_flow_end: Callable[[Node, float, int], None] | None = None,
     ):
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
         self.executor = executor
@@ -541,6 +543,7 @@ class Config:
 
 class Flow:
     def __init__(
+
         self,
         *,
         config: Config | None = None,
@@ -565,7 +568,7 @@ class Flow:
             self.reporter = reporter
 
     def node(
-        self, *, ignore: Sequence[str] | None = None
+            self, *, ignore: Sequence[str] | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
 
@@ -595,7 +598,7 @@ class Flow:
 
     task = node
 
-    def run(self, root: Node, *, reporter=None):
+    def run(self, root: Node, *, reporter=RichReporter()):
         """Run the DAG rooted at ``root``.
 
         If ``reporter`` is provided, it should be an object with an
@@ -620,13 +623,16 @@ class Flow:
 if __name__ == "__main__":
     flow = Flow()
 
+
     @flow.node()
     def add(x, y):
         return x + y
 
+
     @flow.node()
     def square(z):
         return z * z
+
 
     out = flow.run(square(add(2, 3)))
     print("result =", out)  # 25
