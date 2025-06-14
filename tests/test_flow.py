@@ -397,3 +397,32 @@ def test_ignore_signature_fields(tmp_path):
     assert n1.signature == "add(x=1, y=2)"
     assert flow.run(n1) == 3
 
+
+def test_delete_cache(tmp_path):
+    mem = MemoryLRU()
+    disk = DiskJoblib(tmp_path)
+    flow = Flow(cache=ChainCache([mem, disk]), log=False)
+    calls = []
+
+    @flow.task()
+    def add(x, y):
+        calls.append(1)
+        return x + y
+
+    node = add(1, 2)
+    assert flow.run(node) == 3
+    assert node.signature in mem._lru
+
+    p = disk._expr_path(node.signature)
+    if not p.exists():
+        p = disk._hash_path(node.signature)
+    assert p.exists()
+
+    node.delete_cache()
+
+    assert node.signature not in mem._lru
+    assert not p.exists()
+
+    assert flow.run(node) == 3
+    assert calls == [1, 1]
+
