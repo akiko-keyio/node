@@ -200,8 +200,12 @@ class Node:
         ]
         self._detect_cycle()
 
+        ignore = getattr(self.fn, "_node_ignore", ())
+
         if _is_linear_chain(self):
-            self.signature = _render_call(self.fn, self.args, self.kwargs, canonical=True)
+            self.signature = _render_call(
+                self.fn, self.args, self.kwargs, canonical=True, ignore=ignore
+            )
         else:
             script, _ = _build_script(self)
             self.signature = script
@@ -239,18 +243,32 @@ def _render_call(
     *,
     canonical: bool = False,
     mapping: Dict[Node, str] | None = None,
+    ignore: Sequence[str] | None = None,
 ) -> str:
     """Render a function call with argument names."""
 
     def rend(v: Any) -> str:
         if isinstance(v, Node):
-            return mapping[v] if mapping is not None else _render_call(v.fn, v.args, v.kwargs, canonical=canonical)
+            return (
+                mapping[v]
+                if mapping is not None
+                else _render_call(
+                    v.fn,
+                    v.args,
+                    v.kwargs,
+                    canonical=canonical,
+                    ignore=getattr(v.fn, "_node_ignore", ()),
+                )
+            )
         return _canonical(v) if canonical else repr(v)
 
     sig = inspect.signature(fn)
     bound = sig.bind_partial(*args, **kwargs)
 
-    parts = [f"{name}={rend(val)}" for name, val in bound.arguments.items()]
+    ignore_set = set(ignore or ())
+    parts = [
+        f"{name}={rend(val)}" for name, val in bound.arguments.items() if name not in ignore_set
+    ]
     return f"{fn.__name__}({', '.join(parts)})"
 
 
@@ -261,7 +279,10 @@ def _build_script(root: Node):
     lines: List[str] = []
 
     for n in order:
-        key = getattr(n, "signature", None) or _render_call(n.fn, n.args, n.kwargs, canonical=True)
+        ignore = getattr(n.fn, "_node_ignore", ())
+        key = getattr(n, "signature", None) or _render_call(
+            n.fn, n.args, n.kwargs, canonical=True, ignore=ignore
+        )
         if key in sig2var:
             mapping[n] = sig2var[key]
             if n is root:
@@ -269,14 +290,28 @@ def _build_script(root: Node):
             continue
 
         if n is root:
-            call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
+            call = _render_call(
+                n.fn,
+                n.args,
+                n.kwargs,
+                canonical=True,
+                mapping=mapping,
+                ignore=ignore,
+            )
             mapping[n] = call
             lines.append(call)
         else:
             var = f"n{len(sig2var)}"
             sig2var[key] = var
             mapping[n] = var
-            call = _render_call(n.fn, n.args, n.kwargs, canonical=True, mapping=mapping)
+            call = _render_call(
+                n.fn,
+                n.args,
+                n.kwargs,
+                canonical=True,
+                mapping=mapping,
+                ignore=ignore,
+            )
             lines.append(f"{var} = {call}")
 
     return "\n".join(lines), mapping
@@ -425,8 +460,11 @@ class Flow:
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
 
-    def task(self):
+    def task(self, *, ignore: Sequence[str] | None = None):
+        ignore_set = set(ignore or [])
+
         def deco(fn):
+            fn._node_ignore = ignore_set
             sig_obj = inspect.signature(fn)
 
             def wrapper(*args, **kwargs):
