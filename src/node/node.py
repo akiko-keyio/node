@@ -65,6 +65,7 @@ def _canonical(obj: Any) -> str:
 class Cache:
     def get(self, key: str) -> Tuple[bool, Any]: ...
     def put(self, key: str, value: Any) -> None: ...
+    def delete(self, key: str) -> None: ...
 
 
 class MemoryLRU(Cache):
@@ -82,6 +83,10 @@ class MemoryLRU(Cache):
     def put(self, key: str, value: Any):
         with self._lock:                       # ★ NEW
             self._lru[key] = value
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            self._lru.pop(key, None)
 
 
 class DiskJoblib(Cache):
@@ -143,6 +148,18 @@ class DiskJoblib(Cache):
         with ctx:
             joblib.dump(value, p)
 
+    def delete(self, key: str) -> None:
+        expr_p = self._expr_path(key)
+        hash_p = self._hash_path(key)
+        for p in (expr_p, hash_p):
+            if p.exists():
+                with suppress(OSError):
+                    p.unlink()
+        py = hash_p.with_suffix('.py')
+        if py.exists():
+            with suppress(OSError):
+                py.unlink()
+
     def save_script(self, node: "Node"):
         if self._expr_path(node.signature).exists():
             return
@@ -169,6 +186,11 @@ class ChainCache(Cache):
     def put(self, key: str, value: Any):
         for c in self.caches:
             c.put(key, value)
+
+    def delete(self, key: str) -> None:
+        for c in self.caches:
+            if hasattr(c, "delete"):
+                c.delete(key)
 
     def save_script(self, node: "Node"):
         for c in self.caches:
@@ -228,11 +250,18 @@ class Node:
             raise RuntimeError("Node has no associated Flow")
         return self.flow.run(self)
 
+    def delete_cache(self) -> None:
+        if self.flow is None:
+            raise RuntimeError("Node has no associated Flow")
+        if hasattr(self.flow.engine.cache, "delete"):
+            self.flow.engine.cache.delete(self.signature)
+
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
         if self.flow is None:
             raise RuntimeError("Node has no associated Flow")
         self.flow.generate(self)
+
 
 
 # ----------------------------------------------------------------------
