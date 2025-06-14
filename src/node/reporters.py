@@ -104,12 +104,16 @@ class _RichReporterCtx:
             self.status[n][0] = "Executing"
         self.status[n][1] = time.perf_counter()
         self.live.update(self.render())
+        if self.orig_start:
+            self.orig_start(n)
 
     def _on_end(self, n: Node, dur: float, cached: bool):
         if self.status[n][0] not in ("Cached hit in Memory", "Cached hit in Disk"):
             self.status[n][0] = "Executed"
         self.status[n][2] = dur
         self.live.update(self.render())
+        if self.orig_end:
+            self.orig_end(n, dur, cached)
 
     def _refresh_loop(self):
         sleep = 1.0 / self.reporter.refresh_per_second
