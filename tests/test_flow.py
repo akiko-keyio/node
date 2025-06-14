@@ -34,6 +34,23 @@ def test_node_get(tmp_path):
     assert node.get() == 5
 
 
+def test_generate_populates_cache(tmp_path):
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+    calls = []
+
+    @flow.task()
+    def inc(x):
+        calls.append(x)
+        return x + 1
+
+    node = inc(2)
+    flow.generate(node)
+    assert calls == [2]
+    # get should reuse cache without recomputing
+    assert node.get() == 3
+    assert calls == [2]
+
+
 def test_cache_skips_execution(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
