@@ -19,7 +19,7 @@ import functools
 import os
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from contextlib import nullcontext, suppress
@@ -266,16 +266,16 @@ class Node:
 # DAG helpers
 # ----------------------------------------------------------------------
 def _topo_order(root: Node):
-    ts, stack, seen = TopologicalSorter(), [root], set()
+    stack, edges, seen = deque([root]), {}, set()
     while stack:
         n = stack.pop()
         if n in seen:
             continue
         seen.add(n)
         deps = sorted(n.deps, key=lambda x: getattr(x, "signature", ""))
-        ts.add(n, *deps)
+        edges[n] = deps
         stack.extend(deps)
-    return list(ts.static_order())
+    return list(TopologicalSorter(edges).static_order())
 
 
 def _render_call(
@@ -289,36 +289,31 @@ def _render_call(
 ) -> str:
     """Render a function call with argument names."""
 
-    def rend(v: Any) -> str:
-        if isinstance(v, Node):
-            return (
-                mapping[v]
-                if mapping is not None
-                else _render_call(
-                    v.fn,
-                    v.args,
-                    v.kwargs,
-                    canonical=canonical,
-                    ignore=getattr(v.fn, "_node_ignore", ()),
-                )
-            )
-        return _canonical(v) if canonical else repr(v)
+    render = lambda v: (
+        mapping[v]
+        if isinstance(v, Node) and mapping
+        else _render_call(
+            v.fn,
+            v.args,
+            v.kwargs,
+            canonical=canonical,
+            ignore=getattr(v.fn, "_node_ignore", ()),
+        )
+        if isinstance(v, Node)
+        else _canonical(v)
+        if canonical
+        else repr(v)
+    )
 
-    sig = inspect.signature(fn)
-    bound = sig.bind_partial(*args, **kwargs)
-
+    bound = inspect.signature(fn).bind_partial(*args, **kwargs)
     ignore_set = set(ignore or ())
-    parts = [
-        f"{name}={rend(val)}" for name, val in bound.arguments.items() if name not in ignore_set
-    ]
+    parts = [f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set]
     return f"{fn.__name__}({', '.join(parts)})"
 
 
 def _build_script(root: Node):
     order = _topo_order(root)
-    sig2var: Dict[str, str] = {}
-    mapping: Dict[Node, str] = {}
-    lines: List[str] = []
+    sig2var, mapping, lines = {}, {}, []
 
     for n in order:
         ignore = getattr(n.fn, "_node_ignore", ())
@@ -331,30 +326,19 @@ def _build_script(root: Node):
                 lines.append(mapping[n])
             continue
 
-        if n is root:
-            call = _render_call(
-                n.fn,
-                n.args,
-                n.kwargs,
-                canonical=True,
-                mapping=mapping,
-                ignore=ignore,
-            )
-            mapping[n] = call
-            lines.append(call)
-        else:
-            var = f"n{len(sig2var)}"
+        var = key if n is root else f"n{len(sig2var)}"
+        mapping[n] = var
+        if n is not root:
             sig2var[key] = var
-            mapping[n] = var
-            call = _render_call(
-                n.fn,
-                n.args,
-                n.kwargs,
-                canonical=True,
-                mapping=mapping,
-                ignore=ignore,
-            )
-            lines.append(f"{var} = {call}")
+        call = _render_call(
+            n.fn,
+            n.args,
+            n.kwargs,
+            canonical=True,
+            mapping=mapping,
+            ignore=ignore,
+        )
+        lines.append(call if n is root else f"{var} = {call}")
 
     return "\n".join(lines), mapping
 
@@ -362,24 +346,18 @@ def _build_script(root: Node):
 def _is_linear_chain(root: Node) -> bool:
     """Return ``True`` if the graph rooted at ``root`` has no diamond dependencies."""
 
-    seen: set[Node] = set()
-    indeg: Dict[str, int] = defaultdict(int)
-    diamond = False
-
-    def visit(n: Node):
-        nonlocal diamond
+    indeg, seen, stack = defaultdict(int), set(), [root]
+    while stack:
+        n = stack.pop()
         if n in seen:
-            return
+            continue
         seen.add(n)
-
-        for c in (d for d in n.deps if isinstance(d, Node)):
-            indeg[c.signature] += 1
-            if indeg[c.signature] > 1:
-                diamond = True
-            visit(c)
-
-    visit(root)
-    return not diamond
+        for d in filter(lambda x: isinstance(x, Node), n.deps):
+            indeg[d.signature] += 1
+            if indeg[d.signature] > 1:
+                return False
+            stack.append(d)
+    return True
 
 
 # ----------------------------------------------------------------------
