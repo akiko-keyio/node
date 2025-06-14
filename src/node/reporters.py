@@ -6,11 +6,11 @@ from itertools import cycle
 import time
 import threading
 
-from rich.live import Live
-from rich.console import Group
-from rich.text import Text
+from rich.live import Live  # type: ignore[import]
+from rich.console import Group  # type: ignore[import]
+from rich.text import Text  # type: ignore[import]
 
-from .node import Node, _topo_order, _render_call, ChainCache
+from .node import Node, _plan_dag, ChainCache
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
@@ -36,46 +36,18 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _build_lines(self, root: Node):
-        order = _topo_order(root)
-        sig2var: Dict[str, str] = {}
-        mapping: Dict[Node, str] = {}
-        lines: List[str] = []
+        order, mapping, calls, dups = _plan_dag(root)
         nodes: List[Node] = []
+        lines: List[str] = []
+
         for n in order:
-            ignore = getattr(n.fn, "_node_ignore", ())
-            key = getattr(n, "signature", None) or _render_call(
-                n.fn, n.args, n.kwargs, canonical=True, ignore=ignore
-            )
-            if key in sig2var:
-                mapping[n] = sig2var[key]
-                if n is root:
-                    call = _render_call(
-                        n.fn,
-                        n.args,
-                        n.kwargs,
-                        canonical=True,
-                        mapping=mapping,
-                        ignore=ignore,
-                    )
-                    lines.append(call)
-                    nodes.append(n)
+            if n in dups and n is not root:
                 continue
-            var = key if n is root else f"n{len(sig2var)}"
-            mapping[n] = var
-            if n is not root:
-                sig2var[key] = var
-            call = _render_call(
-                n.fn,
-                n.args,
-                n.kwargs,
-                canonical=True,
-                mapping=mapping,
-                ignore=ignore,
-            )
-            lines.append(call if n is root else f"{var} = {call}")
+            call = calls[n]
+            lines.append(call if n is root else f"{mapping[n]} = {call}")
             nodes.append(n)
-        labels = {n: label for n, label in zip(nodes, lines)}
-        return nodes, labels
+
+        return nodes, {n: label for n, label in zip(nodes, lines)}
 
     # --------------------------------------------------------------
     def __enter__(self):
