@@ -352,7 +352,7 @@ def _is_linear_chain(root: Node) -> bool:
         if n in seen:
             continue
         seen.add(n)
-        for d in filter(lambda x: isinstance(x, Node), n.deps):
+        for d in n.deps:  # ``deps`` already contains only ``Node`` objects
             indeg[d.signature] += 1
             if indeg[d.signature] > 1:
                 return False
