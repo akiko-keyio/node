@@ -24,7 +24,7 @@ def test_flow_example(tmp_path):
 def test_node_get(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
@@ -38,7 +38,7 @@ def test_generate_populates_cache(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
 
-    @flow.task()
+    @flow.node()
     def inc(x):
         calls.append(x)
         return x + 1
@@ -403,7 +403,7 @@ def test_cache_fallback_hash(tmp_path, monkeypatch):
 def test_ignore_signature_fields(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
 
-    @flow.task(ignore=["large_df", "model"])
+    @flow.node(ignore=["large_df", "model"])
     def add(x, y, large_df=None, model=None):
         return x + y
 
@@ -421,7 +421,7 @@ def test_delete_cache(tmp_path):
     flow = Flow(cache=ChainCache([mem, disk]), log=False)
     calls = []
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         calls.append(1)
         return x + y

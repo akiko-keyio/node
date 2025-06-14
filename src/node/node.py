@@ -545,11 +545,11 @@ class Flow:
 if __name__ == "__main__":
     flow = Flow()
 
-    @flow.task()
+    @flow.node()
     def add(x, y):
         return x + y
 
-    @flow.task()
+    @flow.node()
     def square(z):
         return z * z
 

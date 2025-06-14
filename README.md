@@ -4,7 +4,7 @@ Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型�
 
 ## 功能特性
 
-- **任务装饰器**：普通函数经 `@flow.task()` 包装后即可组成 DAG，可用 `ignore` 参数排除大型对象。
+- **任务装饰器**：普通函数经 `@flow.node()` 包装后即可组成 DAG，可用 `ignore` 参数排除大型对象。
 - **两级缓存**：默认同时启用内存 LRU 与磁盘缓存，避免重复计算。
 - **并行执行**：支持线程或进程池，`workers` 参数控制并发量。
 - **脚本表示**：任意节点的 `repr()` 都会生成等效的 Python 调用脚本。
@@ -38,7 +38,7 @@ def add(x, y):
 def square(z):
     return z * z
 
-@flow.task(ignore=["large_df", "model"])
+@flow.node(ignore=["large_df", "model"])
 def train(x, y, large_df, model):
     return x + y
 
