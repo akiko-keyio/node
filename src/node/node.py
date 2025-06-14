@@ -47,6 +47,7 @@ def _install_log_sink() -> None:
 _install_log_sink()
 
 
+
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
@@ -438,34 +439,42 @@ class Engine:
         order = _topo_order(root)
 
         progress = None
+
         tasks: Dict[Node, int] | None = None
         if self.log:
+
             progress = Progress(
                 TextColumn("{task.fields[signature]}", justify="left"),
                 SpinnerColumn(),
                 TextColumn("{task.fields[status]}", justify="right"),
+
                 console=_CONSOLE,
                 refresh_per_second=5,
             )
             tasks = {}
+
 
         orig_start = self.on_node_start
         orig_end = self.on_node_end
 
         def start_cb(n):
             if progress:
+
                 tid = tasks.get(n)
                 if tid is not None:
                     progress.update(tid, status="running")
+
             if orig_start:
                 orig_start(n)
 
         def end_cb(n, dur, cached):
             if progress:
+
                 tid = tasks.get(n)
                 if tid is not None:
                     status = "cached" if cached else f"{dur:.1f}s"
                     progress.update(tid, status=status, completed=1)
+
             if orig_end:
                 orig_end(n, dur, cached)
 
@@ -481,6 +490,7 @@ class Engine:
             with pool_cls(max_workers=self.workers) as pool:
                 def submit(node):
                     fut_map[pool.submit(self._eval_node, node)] = node
+
                     if progress is not None:
                         tasks[node] = progress.add_task(
                             "",
@@ -488,6 +498,7 @@ class Engine:
                             status="pending",
                             total=None,
                         )
+
 
                 for n in ts.get_ready():
                     submit(n)
