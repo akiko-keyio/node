@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List
 from itertools import cycle
 import time
+import threading
 
 from rich.live import Live
 from rich.console import Group
@@ -87,9 +88,14 @@ class _RichReporterCtx:
 
         self.live = Live(self.render(), refresh_per_second=self.reporter.refresh_per_second)
         self.live.__enter__()
+        self._stop_event = threading.Event()
+        self._t = threading.Thread(target=self._refresh_loop, daemon=True)
+        self._t.start()
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self._stop_event.set()
+        self._t.join()
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
@@ -107,14 +113,20 @@ class _RichReporterCtx:
             self.status[n][0] = "Cached hit in Disk"
         else:
             self.status[n][0] = "Executing"
-            self.status[n][1] = time.perf_counter()
+        self.status[n][1] = time.perf_counter()
         self.live.update(self.render())
 
     def _on_end(self, n: Node, dur: float, cached: bool):
         if self.status[n][0] not in ("Cached hit in Memory", "Cached hit in Disk"):
             self.status[n][0] = "Executed"
-            self.status[n][2] = dur
+        self.status[n][2] = dur
         self.live.update(self.render())
+
+    def _refresh_loop(self):
+        sleep = 1.0 / self.reporter.refresh_per_second
+        while not self._stop_event.is_set():
+            self.live.update(self.render())
+            time.sleep(sleep)
 
     # --------------------------------------------------------------
     def render(self) -> Group:
