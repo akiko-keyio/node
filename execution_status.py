@@ -1,3 +1,4 @@
+
 from node.node import (
     Flow,
     _topo_order,
@@ -7,6 +8,7 @@ from node.node import (
 from rich.live import Live
 from rich.console import Group
 from rich.text import Text
+
 import time
 
 
@@ -77,12 +79,15 @@ def inc(x: int) -> int:
 if __name__ == "__main__":
     root = square(add(square(2), square(2)))
 
+
     nodes, labels = _build_lines(root)
     status = {n: ["Pending", 0.0] for n in nodes}
+
 
     caches = []
     if isinstance(flow.engine.cache, ChainCache):
         caches = list(flow.engine.cache.caches)
+
 
     def render() -> Group:
         icons = {
@@ -104,13 +109,16 @@ if __name__ == "__main__":
             rows.append(Text(f"{icon} {labels[n]}{extra}"))
         return Group(*rows)
 
+
     def on_start(n):
         mem_hit = False
         disk_hit = False
         if caches:
+
             mem_hit, _ = caches[0].get(n.signature)
         if not mem_hit and len(caches) > 1:
             disk_hit, _ = caches[1].get(n.signature)
+
         if mem_hit:
             status[n][0] = "Cached hit in Memory"
         elif disk_hit:
@@ -118,6 +126,7 @@ if __name__ == "__main__":
         else:
             status[n][0] = "Executing"
         status[n][1] = 0.0
+
         live.update(render())
 
     def on_end(n, dur, cached):
@@ -126,8 +135,10 @@ if __name__ == "__main__":
             status[n][1] = dur
         live.update(render())
 
+
     flow.engine.on_node_start = on_start
     flow.engine.on_node_end = on_end
+
 
     with Live(render(), refresh_per_second=5) as live:
         result = flow.run(root)
