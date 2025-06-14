@@ -371,6 +371,7 @@ class Engine:
         executor: str = "thread",
         workers: int | None = None,
         log: bool = True,
+        on_node_start: Callable[[Node], None] | None = None,
         on_node_end: Callable[[Node, float, bool], None] | None = None,
         on_flow_end: Callable[[Node, float, int], None] | None = None,
     ):
@@ -379,6 +380,7 @@ class Engine:
         self.executor = executor
         self.workers = workers or (os.cpu_count() or 4)
         self.log = log
+        self.on_node_start = on_node_start
         self.on_node_end = on_node_end
         self.on_flow_end = on_flow_end
         self._can_save = hasattr(self.cache, "save_script")
@@ -394,6 +396,8 @@ class Engine:
         return v
 
     def _eval_node(self, n: Node):
+        if self.on_node_start:
+            self.on_node_start(n)
         hit, val = self.cache.get(n.signature)
         if hit:
             if self.on_node_end:

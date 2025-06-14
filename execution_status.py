@@ -1,7 +1,10 @@
 from node.node import Flow
 import time
-from rich.table import Table
-from rich.live import Live
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from node.node import _topo_order, Engine
+
 
 flow = Flow()
 
@@ -25,19 +28,32 @@ def inc(x: int) -> int:
 
 #
 if __name__ == "__main__":
-    table = Table(show_header=False)
-    table.add_column("node")
-    table.add_column("status")
 
-    with Live(table, refresh_per_second=4) as live:
-        def log_status(node, dur, cached):
-            status = "cached" if cached else f"{dur:.1f}s"
-            table.add_row(node.signature, status)
-            live.update(table)
+    console = Console()
+    node = square(add(square(2), square(2)))
+    order = _topo_order(node)
 
-        flow.engine.on_node_end = log_status
+    progress = Progress(
+        TextColumn("{task.fields[signature]}", justify="left"),
+        SpinnerColumn(),
+        TextColumn("{task.fields[status]}", justify="right"),
+        console=console,
+        refresh_per_second=5,
+    )
+    tasks = {n: progress.add_task("", signature=n.signature, status="pending", total=None) for n in order}
 
-        node = square(add(square(2), square(2)))
+    def on_start(n):
+        progress.update(tasks[n], status="running")
+
+    def on_end(n, dur, cached):
+        status = "cached" if cached else f"{dur:.1f}s"
+        progress.update(tasks[n], status=status, completed=1)
+
+    flow.engine.on_node_start = on_start
+    flow.engine.on_node_end = on_end
+
+    with progress:
         result = node.get()
 
-    print("Result:", result)
+    console.print("Result:", result)
+
