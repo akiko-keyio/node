@@ -1,8 +1,10 @@
 from node.node import Flow
 import time
+
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from node.node import _topo_order, Engine
+
 
 flow = Flow()
 
@@ -26,6 +28,7 @@ def inc(x: int) -> int:
 
 #
 if __name__ == "__main__":
+
     console = Console()
     node = square(add(square(2), square(2)))
     order = _topo_order(node)
@@ -53,3 +56,4 @@ if __name__ == "__main__":
         result = node.get()
 
     console.print("Result:", result)
+
