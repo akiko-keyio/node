@@ -475,15 +475,15 @@ class Flow:
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
 
-    def node(self, *, ignore: Sequence[str] | None = None):
+    def node(self, *, ignore: Sequence[str] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
 
-        def deco(fn):
+        def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
             fn._node_ignore = ignore_set
             sig_obj = inspect.signature(fn)
 
             @functools.wraps(fn)
-            def wrapper(*args, **kwargs):
+            def wrapper(*args, **kwargs) -> Node:
                 bound = sig_obj.bind_partial(*args, **kwargs)
                 for name, val in self.config.defaults(fn.__name__).items():
                     if name not in bound.arguments:
