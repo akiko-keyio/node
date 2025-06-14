@@ -467,6 +467,17 @@ class Engine:
     # ------------------------------------------------------------------
     def run(self, root: Node):
         self._exec_count = 0
+
+        hit, val = self.cache.get(root.signature)
+        if hit:
+            if self.on_node_start:
+                self.on_node_start(root)
+            if self.on_node_end:
+                self.on_node_end(root, 0.0, True)
+            if self.on_flow_end:
+                self.on_flow_end(root, 0.0, 0)
+            return val
+
         t0 = time.perf_counter()
         order = _topo_order(root)
 
