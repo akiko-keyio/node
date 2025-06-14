@@ -470,14 +470,15 @@ class Engine:
     def run(self, root: Node):
         self._exec_count = 0
 
+        t0 = time.perf_counter()
         hit, val = self.cache.get(root.signature)
         if hit:
             if self.on_node_start:
                 self.on_node_start(root)
             if self.on_node_end:
-                self.on_node_end(root, 0.0, True)
+                self.on_node_end(root, time.perf_counter() - t0, True)
             if self.on_flow_end:
-                self.on_flow_end(root, 0.0, 0)
+                self.on_flow_end(root, time.perf_counter() - t0, 0)
             return val
 
         t0 = time.perf_counter()
@@ -542,20 +543,29 @@ class Config:
 
 class Flow:
     def __init__(
-            self,
-            *,
-            config: Config | None = None,
-            cache: Cache | None = None,
-            executor: str = "thread",
-            workers: int | None = None,
-            log: bool = True,
-            reporter=None,
+
+        self,
+        *,
+        config: Config | None = None,
+        cache: Cache | None = None,
+        executor: str = "thread",
+        workers: int | None = None,
+        log: bool = True,
+        reporter=_Sentinel.MISS,
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
-        self.reporter = reporter
+        if reporter is _Sentinel.MISS:
+            try:  # defer import to avoid cycle
+                from .reporters import RichReporter as _RR
+            except Exception:
+                self.reporter = None
+            else:
+                self.reporter = _RR()
+        else:
+            self.reporter = reporter
 
     def node(
             self, *, ignore: Sequence[str] | None = None

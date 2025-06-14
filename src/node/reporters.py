@@ -2,13 +2,13 @@ from __future__ import annotations
 # coverage: ignore-file
 
 from typing import Dict, List, TYPE_CHECKING
-from itertools import cycle
 import time
 import threading
 
 from rich.live import Live  # type: ignore[import]
 from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
+from rich.spinner import Spinner  # type: ignore[import]
 
 from .node import Node, _plan_dag, ChainCache
 
@@ -62,7 +62,7 @@ class _RichReporterCtx:
         self.orig_start = self.engine.on_node_start
         self.orig_end = self.engine.on_node_end
 
-        self.spinner = cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        self.spinner = Spinner("dots")
 
         self.engine.on_node_start = self._on_start
         self.engine.on_node_end = self._on_end
@@ -83,6 +83,7 @@ class _RichReporterCtx:
             for n in self.nodes:
                 if self.status[n][0] == "Pending":
                     self.status[n][0] = "Skipped"
+                    self.status[n][2] = 0.0
             self.live.update(self.render())
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
@@ -118,12 +119,12 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def render(self) -> Group:
-        frame = next(self.spinner)
+        frame = self.spinner.render(time.perf_counter())
         rows = []
         for n in self.nodes:
             st, start, dur = self.status[n]
             if st == "Executing":
-                icon = frame
+                icon = str(frame)
                 elapsed = time.perf_counter() - (start or time.perf_counter())
                 extra = f" [{elapsed:.3f}s]"
                 style = ""
@@ -131,6 +132,10 @@ class _RichReporterCtx:
                 icon = "●"
                 extra = ""
                 style = "yellow"
+            elif st == "Skipped":
+                icon = "●"
+                extra = " (skip)"
+                style = "grey50"
             else:
                 icon = "✔"
                 extra = ""
