@@ -548,13 +548,21 @@ class Flow:
         executor: str = "thread",
         workers: int | None = None,
         log: bool = True,
-        reporter=None,
+        reporter=_Sentinel.MISS,
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
-        self.reporter = reporter
+        if reporter is _Sentinel.MISS:
+            try:  # defer import to avoid cycle
+                from .reporters import RichReporter as _RR
+            except Exception:
+                self.reporter = None
+            else:
+                self.reporter = _RR()
+        else:
+            self.reporter = reporter
 
     def node(
         self, *, ignore: Sequence[str] | None = None
