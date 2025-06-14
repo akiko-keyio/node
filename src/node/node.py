@@ -31,20 +31,7 @@ from weakref import WeakValueDictionary  # ★ NEW
 import joblib
 from cachetools import LRUCache
 from filelock import FileLock
-from loguru import logger
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
-_CONSOLE = Console()
-
-
-def _install_log_sink() -> None:
-    """Send loguru logs to the shared Console."""
-    logger.remove()
-    logger.add(lambda m: _CONSOLE.print(m, end=""), colorize=True, enqueue=True)
-
-
-_install_log_sink()
 
 
 
@@ -438,43 +425,14 @@ class Engine:
         t0 = time.perf_counter()
         order = _topo_order(root)
 
-        progress = None
-
-        tasks: Dict[Node, int] | None = None
-        if self.log:
-
-            progress = Progress(
-                TextColumn("{task.fields[signature]}", justify="left"),
-                SpinnerColumn(),
-                TextColumn("{task.fields[status]}", justify="right"),
-
-                console=_CONSOLE,
-                refresh_per_second=5,
-            )
-            tasks = {}
-
-
         orig_start = self.on_node_start
         orig_end = self.on_node_end
 
         def start_cb(n):
-            if progress:
-
-                tid = tasks.get(n)
-                if tid is not None:
-                    progress.update(tid, status="running")
-
             if orig_start:
                 orig_start(n)
 
         def end_cb(n, dur, cached):
-            if progress:
-
-                tid = tasks.get(n)
-                if tid is not None:
-                    status = "cached" if cached else f"{dur:.1f}s"
-                    progress.update(tid, status=status, completed=1)
-
             if orig_end:
                 orig_end(n, dur, cached)
 
@@ -486,41 +444,27 @@ class Engine:
         ts.prepare()
 
         fut_map = {}
-        with progress or nullcontext():
-            with pool_cls(max_workers=self.workers) as pool:
-                def submit(node):
-                    fut_map[pool.submit(self._eval_node, node)] = node
+        with pool_cls(max_workers=self.workers) as pool:
+            def submit(node):
+                fut_map[pool.submit(self._eval_node, node)] = node
 
-                    if progress is not None:
-                        tasks[node] = progress.add_task(
-                            "",
-                            signature=node.signature,
-                            status="pending",
-                            total=None,
-                        )
+            for n in ts.get_ready():
+                submit(n)
 
-
+            while fut_map:
+                done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    node = fut_map.pop(fut)
+                    fut.result()  # re-raise errors immediately
+                    ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
-
-                while fut_map:
-                    done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
-                    for fut in done:
-                        node = fut_map.pop(fut)
-                        fut.result()  # re-raise errors immediately
-                        ts.done(node)
-                    for n in ts.get_ready():
-                        submit(n)
 
         wall = time.perf_counter() - t0
         self.on_node_start = orig_start
         self.on_node_end = orig_end
         if self.on_flow_end:
             self.on_flow_end(root, wall, self._exec_count)
-        if self.log:
-            logger.info(
-                f"Flow done: {self._exec_count}/{len(order)} tasks executed, wall {wall:.3f}s"
-            )
         return self.cache.get(root.signature)[1]
 
 
