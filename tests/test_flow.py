@@ -21,6 +21,19 @@ def test_flow_example(tmp_path):
     assert flow.run(root) == 25
 
 
+def test_node_get(tmp_path):
+    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+
+    @flow.task()
+    def add(x, y):
+        return x + y
+
+    node = add(2, 3)
+    assert node.get() == 5
+    # Second call should reuse cache
+    assert node.get() == 5
+
+
 def test_cache_skips_execution(tmp_path):
     flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
     calls = []
