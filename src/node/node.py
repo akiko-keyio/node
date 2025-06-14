@@ -489,11 +489,13 @@ class Flow:
         executor: str = "thread",
         workers: int | None = None,
         log: bool = True,
+        reporter=None,
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
         self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
         self.log = log
+        self.reporter = reporter
 
     def node(self, *, ignore: Sequence[str] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
@@ -531,6 +533,8 @@ class Flow:
         ``attach(engine, root)`` method returning a context manager
         that hooks into execution callbacks.
         """
+        if reporter is None:
+            reporter = self.reporter
         if reporter is None:
             return self.engine.run(root)
         with reporter.attach(self.engine, root):
