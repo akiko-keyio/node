@@ -70,6 +70,10 @@ class _RichReporterCtx:
         self.live = Live(
             self.render(), refresh_per_second=self.reporter.refresh_per_second
         )
+        try:
+            self.live.console.clear()
+        except Exception:
+            pass
         self.live.__enter__()
         self._stop_event = threading.Event()
         self._t = threading.Thread(target=self._refresh_loop, daemon=True)
