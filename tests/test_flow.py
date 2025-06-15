@@ -1,5 +1,6 @@
 from pathlib import Path
 from contextlib import nullcontext
+import threading
 
 import yaml  # type: ignore[import]
 import pytest
@@ -211,9 +212,10 @@ def test_repr_shared_nodes(flow_factory):
 
     node = combine(add(1, 2), add(1, 2))
     script = repr(node).strip().splitlines()
+    var = node.deps[0].var
     assert script == [
-        "n0 = add(x=1, y=2)",
-        "combine(a=n0, b=n0)",
+        f"{var} = add(x=1, y=2)",
+        f"combine(a={var}, b={var})",
     ]
 
 
@@ -467,3 +469,38 @@ def test_default_reporter(flow_factory):
     assert flow.run(node, reporter=extra) == 3
     assert reporter.count == 1
     assert extra.count == 1
+
+
+def test_concurrent_node_construction(flow_factory):
+    flow = flow_factory()
+
+    @flow.node()
+    def add(x, y):
+        return x + y
+
+    results = []
+
+    def build():
+        results.append(add(1, 2))
+
+    threads = [threading.Thread(target=build) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert all(r is results[0] for r in results)
+
+
+def test_deep_chain_signature(flow_factory):
+    flow = flow_factory(cache=MemoryLRU())
+
+    @flow.node()
+    def inc(x):
+        return x + 1
+
+    node = inc(0)
+    for _ in range(200):
+        node = inc(node)
+
+    assert flow.run(node) == 201

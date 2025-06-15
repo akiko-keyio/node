@@ -9,7 +9,7 @@ import functools
 import os
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -52,21 +52,72 @@ class _Sentinel(enum.Enum):
 
 MISS = _Sentinel.MISS
 
+# global caches & locks
+_can_lock = threading.Lock()
+_ren_lock = threading.Lock()
+_sig_lock = threading.Lock()
+_canonical_cache: LRUCache[tuple[int, str], str] = LRUCache(maxsize=4096)
+_render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
+
+
+class _Lines:
+    __slots__ = ("lines", "__weakref__")
+
+    def __init__(self, lines: List[Tuple[str, str]]):
+        self.lines = lines
+
+
+_signature_cache: WeakValueDictionary[str, _Lines] = WeakValueDictionary()
+
 
 def _canonical(obj: Any) -> str:
     """Convert an object into a deterministic string representation."""
     if isinstance(obj, Node):
         return obj.signature
+
+    key = (id(obj), repr(obj))
+    with _can_lock:
+        res = _canonical_cache.get(key)
+    if res is not None:
+        return res
+
     if isinstance(obj, dict):
         inner = ", ".join(f"{repr(k)}: {_canonical(v)}" for k, v in sorted(obj.items()))
-        return "{" + inner + "}"
-    if isinstance(obj, (list, tuple)):
+        res = "{" + inner + "}"
+    elif isinstance(obj, (list, tuple)):
         inner = ", ".join(_canonical(v) for v in obj)
-        return "[" + inner + "]" if isinstance(obj, list) else "(" + inner + ")"
-    if isinstance(obj, set):
+        res = "[" + inner + "]" if isinstance(obj, list) else "(" + inner + ")"
+    elif isinstance(obj, set):
         inner = ", ".join(_canonical(v) for v in sorted(obj))
-        return "{" + inner + "}"
-    return repr(obj)
+        res = "{" + inner + "}"
+    else:
+        res = repr(obj)
+
+    with _can_lock:
+        _canonical_cache[key] = res
+    return res
+
+
+def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
+    bound = inspect.signature(node.fn).bind_partial(*node.args, **node.kwargs)
+    ignore = set(getattr(node.fn, "_node_ignore", ()))
+    parts = []
+    for k, v in bound.arguments.items():
+        if k in ignore:
+            continue
+        if isinstance(v, Node):
+            parts.append((k, v._hash))
+        else:
+            parts.append((k, _canonical(v)))
+    return tuple(parts)
+
+
+def _merge_lines(nodes: Sequence["Node"]) -> List[Tuple[str, str]]:
+    merged: OrderedDict[str, str] = OrderedDict()
+    for n in sorted(nodes, key=lambda x: x._hash):
+        for h, line in n.lines():
+            merged.setdefault(h, line)
+    return [(h, line) for h, line in merged.items()]
 
 
 # ----------------------------------------------------------------------
@@ -212,10 +263,18 @@ class Node:
         "args",
         "kwargs",
         "deps",
-        "signature",
         "flow",
+        "_hash",
+        "_lines",
+        "__signature",
+        "_lock",
         "__weakref__",
     )
+
+    _hash: str
+    _lines: List[Tuple[str, str]] | None
+    __signature: str | None
+    _lock: threading.Lock
 
     def __init__(
         self,
@@ -236,15 +295,18 @@ class Node:
         ]
         self._detect_cycle()
 
-        ignore = getattr(self.fn, "_node_ignore", ())
-
-        if _is_linear_chain(self):
-            self.signature = _render_call(
-                self.fn, self.args, self.kwargs, canonical=True, ignore=ignore
-            )
-        else:
-            script, _ = _build_script(self)
-            self.signature = script
+        child_hashes = tuple(d._hash for d in self.deps)
+        code_hash = hashlib.blake2b(self.fn.__code__.co_code, digest_size=8).hexdigest()
+        raw = (
+            self.fn.__qualname__,
+            code_hash,
+            _canonical_args(self),
+            child_hashes,
+        )
+        self._hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
+        self._lines: List[Tuple[str, str]] | None = None
+        self.__signature: str | None = None
+        self._lock = threading.Lock()
 
     def _require_flow(self) -> "Flow":
         if self.flow is None:
@@ -259,6 +321,92 @@ class Node:
 
     def __repr__(self):
         return self.signature
+
+    @property
+    def var(self) -> str:
+        return f"h_{self._hash[:6]}"
+
+    def lines(self) -> List[Tuple[str, str]]:
+        """Return script lines for this node without trailing call."""
+        with self._lock:
+            cached = self._lines
+            if cached is not None:
+                return cached
+            holder = _signature_cache.get(self._hash)
+            if holder is not None:
+                self._lines = holder.lines
+                return holder.lines
+
+        return self._compute_lines()
+
+    def _collect_lines(self) -> OrderedDict[str, str]:
+        merged: OrderedDict[str, str] = OrderedDict()
+        for dep in self.deps:
+            for h, line in dep.lines():
+                merged.setdefault(h, line)
+        return merged
+
+    def _compute_lines(self) -> List[Tuple[str, str]]:
+        merged = self._collect_lines()
+        mapping = {d: d.var for d in self.deps}
+        ignore = getattr(self.fn, "_node_ignore", ())
+        call = _render_call(
+            self.fn,
+            self.args,
+            self.kwargs,
+            canonical=True,
+            mapping=mapping,
+            ignore=ignore,
+        )
+        merged[self._hash] = f"{self.var} = {call}"
+        lines = [(h, line) for h, line in merged.items()]
+        holder = _Lines(lines)
+        with _sig_lock:
+            _signature_cache[self._hash] = holder
+        with self._lock:
+            self._lines = lines
+        return lines
+
+    def _compute_signature(self) -> str:
+        with self._lock:
+            if self.__signature is not None:
+                return self.__signature
+
+        if _is_linear_chain(self):
+            ignore = getattr(self.fn, "_node_ignore", ())
+            result = _render_call(
+                self.fn,
+                self.args,
+                self.kwargs,
+                canonical=True,
+                ignore=ignore,
+            )
+        else:
+            result = self._non_linear_signature()
+
+        with self._lock:
+            self.__signature = result
+        return result
+
+    def _non_linear_signature(self) -> str:
+        self.lines()  # ensure populated
+        mapping = {d: d.var for d in self.deps}
+        ignore = getattr(self.fn, "_node_ignore", ())
+        call = _render_call(
+            self.fn,
+            self.args,
+            self.kwargs,
+            canonical=True,
+            mapping=mapping,
+            ignore=ignore,
+        )
+        lines = [line for _, line in self.lines()[:-1]]
+        lines.append(call)
+        return "\n".join(lines)
+
+    @property
+    def signature(self) -> str:
+        return self._compute_signature()
 
     def get(self):
         return self._require_flow().run(self)
@@ -283,7 +431,7 @@ def _topo_order(root: Node):
         if n in seen:
             continue
         seen.add(n)
-        deps = sorted(n.deps, key=lambda x: getattr(x, "signature", ""))
+        deps = sorted(n.deps, key=lambda x: getattr(x, "_hash", ""))
         edges[n] = deps
         stack.extend(deps)
     return list(TopologicalSorter(edges).static_order())
@@ -313,62 +461,29 @@ def _render_call(
             )
         return _canonical(v) if canonical else repr(v)
 
+    key = (
+        fn.__qualname__,
+        canonical,
+        tuple(repr(a) for a in args),
+        tuple(sorted((k, repr(v)) for k, v in kwargs.items())),
+        tuple(sorted((d._hash, v) for d, v in mapping.items())) if mapping else None,
+        tuple(sorted(ignore or [])),
+    )
+    with _ren_lock:
+        res = _render_cache.get(key)
+    if res is not None:
+        return res
+
     bound = inspect.signature(fn).bind_partial(*args, **kwargs)
     ignore_set = set(ignore or ())
     parts = [
         f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set
     ]
-    return f"{fn.__name__}({', '.join(parts)})"
+    res = f"{fn.__name__}({', '.join(parts)})"
 
-
-def _node_key(n: Node) -> str:
-    ignore = getattr(n.fn, "_node_ignore", ())
-    return getattr(n, "signature", None) or _render_call(
-        n.fn, n.args, n.kwargs, canonical=True, ignore=ignore
-    )
-
-
-def _plan_dag(
-    root: Node,
-) -> tuple[list[Node], dict[Node, str], dict[Node, str], set[Node]]:
-    order = _topo_order(root)
-    sig2var: Dict[str, str] = {}
-    mapping: Dict[Node, str] = {}
-    calls: Dict[Node, str] = {}
-    dups: set[Node] = set()
-    for n in order:
-        key = _node_key(n)
-        if key in sig2var:
-            mapping[n] = sig2var[key]
-            dups.add(n)
-        else:
-            mapping[n] = key if n is root else f"n{len(sig2var)}"
-            if n is not root:
-                sig2var[key] = mapping[n]
-        calls[n] = _render_call(
-            n.fn,
-            n.args,
-            n.kwargs,
-            canonical=True,
-            mapping=mapping,
-            ignore=getattr(n.fn, "_node_ignore", ()),
-        )
-    return order, mapping, calls, dups
-
-
-def _build_script(root: Node):
-    order, mapping, calls, dups = _plan_dag(root)
-    lines: List[str] = []
-
-    for n in order:
-        if n in dups:
-            if n is root:
-                lines.append(mapping[n])
-            continue
-        call = calls[n]
-        lines.append(call if n is root else f"{mapping[n]} = {call}")
-
-    return "\n".join(lines), mapping
+    with _ren_lock:
+        _render_cache[key] = res
+    return res
 
 
 def _is_linear_chain(root: Node) -> bool:
@@ -383,8 +498,8 @@ def _is_linear_chain(root: Node) -> bool:
             continue
         seen.add(n)
         for d in n.deps:  # ``deps`` already contains only ``Node`` objects
-            indeg[d.signature] += 1
-            if indeg[d.signature] > 1:
+            indeg[d._hash] += 1
+            if indeg[d._hash] > 1:
                 return False
             stack.append(d)
     return True
@@ -566,10 +681,10 @@ class Flow:
                 bound.apply_defaults()
 
                 node = Node(fn, bound.args, bound.kwargs, flow=self)
-                cached = self._registry.get(node.signature)
+                cached = self._registry.get(node._hash)
                 if cached is not None:
                     return cached
-                self._registry[node.signature] = node
+                self._registry[node._hash] = node
                 return node
 
             wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
@@ -598,3 +713,12 @@ class Flow:
     def generate(self, root: Node) -> None:
         """Compute and cache ``root`` without returning the value."""
         self.engine.run(root)
+
+    def clear_caches(self) -> None:
+        """Clear global helper caches."""
+        with _can_lock:
+            _canonical_cache.clear()
+        with _ren_lock:
+            _render_cache.clear()
+        with _sig_lock:
+            _signature_cache.clear()

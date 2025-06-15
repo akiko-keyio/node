@@ -60,7 +60,8 @@ def test_signature_script_dedup():
     root = Node(add, (a, b))
 
     lines = root.signature.strip().splitlines()
+    var = a.var
     assert lines == [
-        "n0 = add(x=1, y=2)",
-        "add(x=n0, y=n0)",
+        f"{var} = add(x=1, y=2)",
+        f"add(x={var}, y={var})",
     ]

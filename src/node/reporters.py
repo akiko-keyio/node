@@ -10,7 +10,7 @@ from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 
-from .node import Node, _plan_dag, ChainCache
+from .node import Node, ChainCache, _topo_order
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
@@ -36,18 +36,19 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _build_lines(self, root: Node):
-        order, mapping, calls, dups = _plan_dag(root)
+        order = _topo_order(root)
+        h2node = {n._hash: n for n in order}
         nodes: List[Node] = []
-        lines: List[str] = []
-
-        for n in order:
-            if n in dups and n is not root:
-                continue
-            call = calls[n]
-            lines.append(call if n is root else f"{mapping[n]} = {call}")
+        labels: Dict[Node, str] = {}
+        for h, line in root.lines():
+            n = h2node[h]
             nodes.append(n)
+            label = line
+            if n is root and "=" in line:
+                label = line.split("=", 1)[1].strip()
+            labels[n] = label
 
-        return nodes, {n: label for n, label in zip(nodes, lines)}
+        return nodes, labels
 
     # --------------------------------------------------------------
     def __enter__(self):
