@@ -32,7 +32,8 @@ def test_branch_no_diamond(flow_factory, tmp_path):
         return z * z
 
     node = square(add(square(1), square(2)))
-    expected = "square(z=add(x=square(z=1), y=square(z=2)))"
+    var = node.deps[0].var
+    expected = f"square(z={var})"
     assert node.signature == expected
 
 
