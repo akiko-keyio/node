@@ -18,6 +18,7 @@ from concurrent.futures import (
     wait,
 )
 from contextlib import nullcontext, suppress
+from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
@@ -51,6 +52,53 @@ class _Sentinel(enum.Enum):
 
 
 MISS = _Sentinel.MISS
+
+
+@dataclass(frozen=True)
+class Plan:
+    order: tuple["Node", ...]
+    edges: dict["Node", tuple["Node", ...]]
+    mapping: dict["Node", str]
+    lines: tuple[str, ...]
+    shown: tuple["Node", ...]
+
+
+_PLAN_CACHE: LRUCache[int, Plan] = LRUCache(maxsize=128)
+_PLAN_LOCK = threading.Lock()
+
+
+def _build_plan(root: "Node") -> Plan:
+    order, edges = _topo_order(root, return_edges=True)
+    _, mapping, _calls, _dups, lines, shown = _plan_dag(root, order=order)
+    is_linear = _is_linear_chain(edges)
+    if is_linear:
+        ignore = getattr(root.fn, "_node_ignore", ())
+        root_sig = _render_call(
+            root.fn, root.args, root.kwargs, canonical=True, ignore=ignore
+        )
+        mapping[root] = root_sig
+        lines = [mapping[n] for n in order]
+        shown = order
+    else:
+        root_sig = "\n".join(lines)
+        mapping[root] = root_sig
+    if not hasattr(root, "_signature"):
+        root.signature = root_sig
+    edge_map = {n: tuple(edges[n]) for n in order}
+    return Plan(tuple(order), edge_map, mapping, tuple(lines), tuple(shown))
+
+
+def get_plan(root: "Node") -> Plan:
+    root_id = id(root)
+    plan = _PLAN_CACHE.get(root_id)
+    if plan is not None:
+        return plan
+    with _PLAN_LOCK:
+        plan = _PLAN_CACHE.get(root_id)
+        if plan is None:
+            plan = _build_plan(root)
+            _PLAN_CACHE[root_id] = plan
+        return plan
 
 
 def _canonical(obj: Any) -> str:
@@ -124,20 +172,23 @@ class DiskJoblib(Cache):
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
 
-    def _subdir(self, key: str) -> Path:
-        """Return the directory corresponding to the node's function name."""
+    def _dir_for(self, key: str) -> Path:
+        """Return the directory for ``key`` and ensure it exists."""
         lines = key.strip().splitlines()[-1]
         fn_name = lines.split("(", 1)[0]
         sub = self.root / fn_name
         sub.mkdir(parents=True, exist_ok=True)
         return sub
 
+    def _path(self, key: str, *, hashed: bool = False, ext: str = ".pkl") -> Path:
+        name = hashlib.md5(key.encode()).hexdigest() if hashed else key
+        return self._dir_for(key) / (name + ext)
+
     def _expr_path(self, key: str, ext: str = ".pkl") -> Path:
-        return self._subdir(key) / (key + ext)
+        return self._path(key, hashed=False, ext=ext)
 
     def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
-        md = hashlib.md5(key.encode()).hexdigest()
-        return self._subdir(key) / (md + ext)
+        return self._path(key, hashed=True, ext=ext)
 
     def get(self, key: str):
         for p in (self._expr_path(key), self._hash_path(key)):
@@ -212,10 +263,20 @@ class Node:
         "args",
         "kwargs",
         "deps",
-        "signature",
+        "_signature",
         "flow",
         "__weakref__",
     )
+
+    @property
+    def signature(self) -> str:
+        return self._signature
+
+    @signature.setter
+    def signature(self, val: str) -> None:
+        if hasattr(self, "_signature"):
+            raise AttributeError("signature is immutable")
+        self._signature = val
 
     def __init__(
         self,
@@ -234,28 +295,16 @@ class Node:
             *(a for a in self.args if isinstance(a, Node)),
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
-        self._detect_cycle()
-
-        ignore = getattr(self.fn, "_node_ignore", ())
-
-        if _is_linear_chain(self):
-            self.signature = _render_call(
-                self.fn, self.args, self.kwargs, canonical=True, ignore=ignore
-            )
-        else:
-            script, _ = _build_script(self)
-            self.signature = script
+        if self in self.deps:
+            raise ValueError("Node cannot depend on itself")
+        sig = get_plan(self).mapping[self]
+        if not hasattr(self, "_signature"):
+            self.signature = sig
 
     def _require_flow(self) -> "Flow":
         if self.flow is None:
             raise RuntimeError("Node has no associated Flow")
         return self.flow
-
-    def _detect_cycle(self):
-        try:
-            _topo_order(self)
-        except CycleError as e:
-            raise ValueError("Cycle detected in DAG") from e
 
     def __repr__(self):
         return self.signature
@@ -276,7 +325,7 @@ class Node:
 # ----------------------------------------------------------------------
 # DAG helpers
 # ----------------------------------------------------------------------
-def _topo_order(root: Node):
+def _topo_order(root: Node, *, return_edges: bool = False):
     stack, edges, seen = deque([root]), {}, set()
     while stack:
         n = stack.pop()
@@ -286,7 +335,11 @@ def _topo_order(root: Node):
         deps = sorted(n.deps, key=lambda x: getattr(x, "signature", ""))
         edges[n] = deps
         stack.extend(deps)
-    return list(TopologicalSorter(edges).static_order())
+    try:
+        order = list(TopologicalSorter(edges).static_order())
+    except CycleError as e:  # pragma: no cover - rare
+        raise ValueError("Cycle detected in DAG") from e
+    return (order, edges) if return_edges else order
 
 
 def _render_call(
@@ -330,12 +383,22 @@ def _node_key(n: Node) -> str:
 
 def _plan_dag(
     root: Node,
-) -> tuple[list[Node], dict[Node, str], dict[Node, str], set[Node]]:
-    order = _topo_order(root)
+    order: List[Node] | None = None,
+) -> tuple[
+    list[Node],
+    dict[Node, str],
+    dict[Node, str],
+    set[Node],
+    list[str],
+    list[Node],
+]:
+    order = order or _topo_order(root)
     sig2var: Dict[str, str] = {}
     mapping: Dict[Node, str] = {}
     calls: Dict[Node, str] = {}
     dups: set[Node] = set()
+    lines: List[str] = []
+    shown: List[Node] = []
     for n in order:
         key = _node_key(n)
         if key in sig2var:
@@ -345,7 +408,7 @@ def _plan_dag(
             mapping[n] = key if n is root else f"n{len(sig2var)}"
             if n is not root:
                 sig2var[key] = mapping[n]
-        calls[n] = _render_call(
+        call = _render_call(
             n.fn,
             n.args,
             n.kwargs,
@@ -353,40 +416,29 @@ def _plan_dag(
             mapping=mapping,
             ignore=getattr(n.fn, "_node_ignore", ()),
         )
-    return order, mapping, calls, dups
-
-
-def _build_script(root: Node):
-    order, mapping, calls, dups = _plan_dag(root)
-    lines: List[str] = []
-
-    for n in order:
-        if n in dups:
-            if n is root:
-                lines.append(mapping[n])
+        calls[n] = call
+        if n in dups and n is not root:
             continue
-        call = calls[n]
         lines.append(call if n is root else f"{mapping[n]} = {call}")
+        shown.append(n)
+    return order, mapping, calls, dups, lines, shown
 
+
+def _build_script(root: Node, *, order: List[Node] | None = None):
+    _, mapping, _, _, lines, _ = _plan_dag(root, order=order)
     return "\n".join(lines), mapping
 
 
-def _is_linear_chain(root: Node) -> bool:
-    """Return ``True`` if the graph rooted at ``root`` has no diamond dependencies."""
+def _is_linear_chain(edges: Dict[Node, List[Node]]) -> bool:
+    """Return ``True`` if no node in ``edges`` has multiple parents."""
 
     indeg: Dict[str, int] = defaultdict(int)
-    seen: set[Node] = set()
-    stack = [root]
-    while stack:
-        n = stack.pop()
-        if n in seen:
-            continue
-        seen.add(n)
-        for d in n.deps:  # ``deps`` already contains only ``Node`` objects
-            indeg[d.signature] += 1
-            if indeg[d.signature] > 1:
+    for deps in edges.values():
+        for d in deps:
+            key = _node_key(d)
+            indeg[key] += 1
+            if indeg[key] > 1:
                 return False
-            stack.append(d)
     return True
 
 
@@ -416,24 +468,39 @@ class Engine:
 
         self._exec_count = 0
         self._lock = threading.Lock()
+        self._val_lock = threading.Lock()
+        if executor == "thread":
+            self._values: Dict[Node, Any] | None = {}
+        else:
+            self._values = None
 
     # ------------------------------------------------------------------
-    def _resolve(self, v):
-        if isinstance(v, Node):
+    def _resolve(self, v, *, check_cache: bool = True):
+        """Return cached value for ``v`` or :data:`MISS`."""
+        if not isinstance(v, Node):
+            return v
+        if check_cache and self._values is not None:
+            with self._val_lock:
+                if v in self._values:
+                    return self._values[v]
             hit, val = self.cache.get(v.signature)
-            return val if hit else None
-        return v
+            if hit:
+                with self._val_lock:
+                    self._values[v] = val
+                return val
+        elif check_cache:
+            hit, val = self.cache.get(v.signature)
+            if hit:
+                return val
+        return MISS
 
-    def _eval_node(self, n: Node):
+    def _eval_node(self, n: Node, *, skip_cache: bool = False):
         start = time.perf_counter()
         if self.on_node_start:
             self.on_node_start(n)
-        hit, val = self.cache.get(n.signature)
-        if hit:
-            dur = time.perf_counter() - start
-            if self.on_node_end:
-                self.on_node_end(n, dur, True)
-            return val
+        cached = self._resolve(n, check_cache=not skip_cache)
+        if cached is not MISS:
+            return self._finish_node(n, start, cached, True)
 
         args = [self._resolve(a) for a in n.args]
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
@@ -441,75 +508,143 @@ class Engine:
         self.cache.put(n.signature, val)
         if self._can_save:
             self.cache.save_script(n)
+        if self._values is not None:
+            with self._val_lock:
+                self._values[n] = val
+        return self._finish_node(n, start, val, False)
+
+    def _finish_node(self, n: Node, start: float, val: Any, cached: bool):
         dur = time.perf_counter() - start
         if self.on_node_end:
-            self.on_node_end(n, dur, False)
+            self.on_node_end(n, dur, cached)
         with self._lock:
-            self._exec_count += 1
+            if not cached:
+                self._exec_count += 1
         return val
 
     # ------------------------------------------------------------------
     def run(self, root: Node):
         self._exec_count = 0
+        if self._values is not None:
+            with self._val_lock:
+                self._values = {}
 
         t0 = time.perf_counter()
         hit, val = self.cache.get(root.signature)
         if hit:
-            if self.on_node_start:
-                self.on_node_start(root)
-            if self.on_node_end:
-                self.on_node_end(root, time.perf_counter() - t0, True)
-            if self.on_flow_end:
-                self.on_flow_end(root, time.perf_counter() - t0, 0)
+            self._report_cached(root, t0)
             return val
 
-        t0 = time.perf_counter()
-        order = _topo_order(root)
+        plan = get_plan(root)
+        edges = {n: list(d) for n, d in plan.edges.items()}
+        orig = (self.on_node_start, self.on_node_end)
+        self.on_node_start, self.on_node_end = self._wrap_callbacks(orig)
+        dep_count, dependents = self._build_schedule(edges)
+        root_val = self._run_pool(root, dep_count, dependents)
+        wall = time.perf_counter() - t0
+        self.on_node_start, self.on_node_end = orig
+        if self.on_flow_end:
+            self.on_flow_end(root, wall, self._exec_count)
+        return root_val
 
-        orig_start = self.on_node_start
-        orig_end = self.on_node_end
+    # ------------------------------------------------------------------
+    def _report_cached(self, root: Node, start: float) -> None:
+        if self.on_node_start:
+            self.on_node_start(root)
+        dur = time.perf_counter() - start
+        if self.on_node_end:
+            self.on_node_end(root, dur, True)
+        if self.on_flow_end:
+            self.on_flow_end(root, dur, 0)
 
-        def start_cb(n):
+    def _wrap_callbacks(
+        self,
+        orig: tuple[
+            Callable[[Node], None] | None, Callable[[Node, float, bool], None] | None
+        ],
+    ) -> tuple[
+        Callable[[Node], None] | None, Callable[[Node, float, bool], None] | None
+    ]:
+        orig_start, orig_end = orig
+
+        def start_cb(n: Node):
             if orig_start:
                 orig_start(n)
 
-        def end_cb(n, dur, cached):
+        def end_cb(n: Node, dur: float, cached: bool):
             if orig_end:
                 orig_end(n, dur, cached)
 
-        self.on_node_start = start_cb
-        self.on_node_end = end_cb
+        return start_cb, end_cb
 
+    def _build_schedule(self, edges: Dict[Node, List[Node]]):
+        dep_count = {n: len(d) for n, d in edges.items()}
+        dependents: Dict[Node, List[Node]] = defaultdict(list)
+        for n, deps in edges.items():
+            for d in deps:
+                dependents[d].append(n)
+        return dep_count, dependents
+
+    def _submit(self, pool, node: Node, fut_map: Dict[Any, Node], root: Node) -> None:
+        fut = pool.submit(self._eval_node, node, skip_cache=(node is root))
+        fut_map[fut] = node
+
+    def _schedule_initial(
+        self,
+        pool,
+        dep_count: Dict[Node, int],
+        fut_map: Dict[Any, Node],
+        root: Node,
+    ) -> None:
+        for n, cnt in dep_count.items():
+            if cnt == 0:
+                self._submit(pool, n, fut_map, root)
+
+    def _process_done(
+        self,
+        done,
+        dep_count: Dict[Node, int],
+        dependents: Dict[Node, List[Node]],
+        fut_map: Dict[Any, Node],
+        pool,
+        root: Node,
+        root_val: List[Any],
+    ) -> None:
+        for fut in done:
+            node = fut_map.pop(fut)
+            val = fut.result()
+            if node is root:
+                root_val[0] = val
+            for nxt in dependents[node]:
+                dep_count[nxt] -= 1
+                if dep_count[nxt] == 0:
+                    self._submit(pool, nxt, fut_map, root)
+
+    def _run_pool(
+        self,
+        root: Node,
+        dep_count: Dict[Node, int],
+        dependents: Dict[Node, List[Node]],
+    ) -> Any:
         pool_cls = (
             ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
         )
-        ts = TopologicalSorter({n: n.deps for n in order})
-        ts.prepare()
-
-        fut_map = {}
+        fut_map: Dict[Any, Node] = {}
+        root_val: List[Any] = [None]
         with pool_cls(max_workers=self.workers) as pool:
-
-            def submit(node):
-                fut_map[pool.submit(self._eval_node, node)] = node
-
-            for n in ts.get_ready():
-                submit(n)
-
+            self._schedule_initial(pool, dep_count, fut_map, root)
             while fut_map:
                 done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
-                for fut in done:
-                    node = fut_map.pop(fut)
-                    fut.result()  # re-raise errors immediately
-                    ts.done(node)
-                for n in ts.get_ready():
-                    submit(n)
-
-        wall = time.perf_counter() - t0
-        self.on_node_start = orig_start
-        self.on_node_end = orig_end
-        if self.on_flow_end:
-            self.on_flow_end(root, wall, self._exec_count)
-        return self.cache.get(root.signature)[1]
+                self._process_done(
+                    done,
+                    dep_count,
+                    dependents,
+                    fut_map,
+                    pool,
+                    root,
+                    root_val,
+                )
+        return root_val[0]
 
 
 # ----------------------------------------------------------------------
