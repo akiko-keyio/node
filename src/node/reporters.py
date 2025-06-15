@@ -9,6 +9,7 @@ from rich.live import Live  # type: ignore[import]
 from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
+from rich.progress import Progress  # type: ignore[import]
 
 from .node import Node, ChainCache, _topo_order
 
@@ -65,6 +66,12 @@ class _RichReporterCtx:
 
         self.spinner = Spinner("dots")
 
+        self.progress = Progress(
+            transient=True,
+            refresh_per_second=self.reporter.refresh_per_second,
+        )
+        self.bar = self.progress.add_task("task", total=len(self.nodes))
+
         self.engine.on_node_start = self._on_start
         self.engine.on_node_end = self._on_end
 
@@ -89,6 +96,7 @@ class _RichReporterCtx:
                 if self.status[n][0] == "Pending":
                     self.status[n][0] = "Skipped"
                     self.status[n][2] = 0.0
+                    self.progress.advance(self.bar)
             self.live.update(self.render())
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
@@ -116,6 +124,7 @@ class _RichReporterCtx:
         if self.status[n][0] not in ("Cached hit in Memory", "Cached hit in Disk"):
             self.status[n][0] = "Executed"
         self.status[n][2] = dur
+        self.progress.advance(self.bar)
         self.live.update(self.render())
         if self.orig_end:
             self.orig_end(n, dur, cached)
@@ -129,7 +138,7 @@ class _RichReporterCtx:
     # --------------------------------------------------------------
     def render(self) -> Group:
         frame = self.spinner.render(time.perf_counter())
-        rows = []
+        rows = [self.progress.get_renderable()]
         for n in self.nodes:
             st, start, dur = self.status[n]
             if st == "Executing":
