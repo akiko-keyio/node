@@ -348,14 +348,14 @@ class Node:
 
     def _compute_lines(self) -> List[Tuple[str, str]]:
         merged = self._collect_lines()
-        mapping = {d: d.var for d in self.deps}
+        var_map = {d: d.var for d in self.deps}
         ignore = getattr(self.fn, "_node_ignore", ())
         call = _render_call(
             self.fn,
             self.args,
             self.kwargs,
             canonical=True,
-            mapping=mapping,
+            mapping=var_map,
             ignore=ignore,
         )
         merged[self._hash] = f"{self.var} = {call}"
@@ -373,12 +373,14 @@ class Node:
                 return self.__signature
 
         if _is_linear_chain(self):
+            var_map = {d: d.var for d in self.deps}
             ignore = getattr(self.fn, "_node_ignore", ())
             result = _render_call(
                 self.fn,
                 self.args,
                 self.kwargs,
                 canonical=True,
+                mapping=var_map,
                 ignore=ignore,
             )
         else:
@@ -390,14 +392,14 @@ class Node:
 
     def _non_linear_signature(self) -> str:
         self.lines()  # ensure populated
-        mapping = {d: d.var for d in self.deps}
+        var_map = {d: d.var for d in self.deps}
         ignore = getattr(self.fn, "_node_ignore", ())
         call = _render_call(
             self.fn,
             self.args,
             self.kwargs,
             canonical=True,
-            mapping=mapping,
+            mapping=var_map,
             ignore=ignore,
         )
         lines = [line for _, line in self.lines()[:-1]]

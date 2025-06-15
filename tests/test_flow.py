@@ -122,8 +122,9 @@ def test_build_script_repr(flow_factory):
         return z * z
 
     node = square(add(2, 3))
-    script = repr(node)
-    assert script.strip() == "square(z=add(x=2, y=3))"
+    script = repr(node).strip()
+    var = node.deps[0].var
+    assert script == f"square(z={var})"
 
 
 def test_linear_chain_repr(flow_factory):
@@ -142,7 +143,8 @@ def test_linear_chain_repr(flow_factory):
         return a
 
     node = f1(f2(f3(1)))
-    assert repr(node).strip() == "f1(a=f2(a=f3(a=1)))"
+    var = node.deps[0].var
+    assert repr(node).strip() == f"f1(a={var})"
 
 
 def test_diamond_dependency(flow_factory):
