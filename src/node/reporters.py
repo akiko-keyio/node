@@ -9,8 +9,9 @@ from rich.live import Live  # type: ignore[import]
 from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
+from rich.progress import Progress  # type: ignore[import]
 
-from .node import Node, _plan_dag, ChainCache
+from .node import Node, ChainCache, _topo_order
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
@@ -36,18 +37,19 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _build_lines(self, root: Node):
-        order, mapping, calls, dups = _plan_dag(root)
+        order = _topo_order(root)
+        h2node = {n._hash: n for n in order}
         nodes: List[Node] = []
-        lines: List[str] = []
-
-        for n in order:
-            if n in dups and n is not root:
-                continue
-            call = calls[n]
-            lines.append(call if n is root else f"{mapping[n]} = {call}")
+        labels: Dict[Node, str] = {}
+        for h, line in root.lines():
+            n = h2node[h]
             nodes.append(n)
+            label = line
+            if n is root and "=" in line:
+                label = line.split("=", 1)[1].strip()
+            labels[n] = label
 
-        return nodes, {n: label for n, label in zip(nodes, lines)}
+        return nodes, labels
 
     # --------------------------------------------------------------
     def __enter__(self):
@@ -63,6 +65,12 @@ class _RichReporterCtx:
         self.orig_end = self.engine.on_node_end
 
         self.spinner = Spinner("dots")
+
+        self.progress = Progress(
+            transient=True,
+            refresh_per_second=self.reporter.refresh_per_second,
+        )
+        self.bar = self.progress.add_task("task", total=len(self.nodes))
 
         self.engine.on_node_start = self._on_start
         self.engine.on_node_end = self._on_end
@@ -88,6 +96,7 @@ class _RichReporterCtx:
                 if self.status[n][0] == "Pending":
                     self.status[n][0] = "Skipped"
                     self.status[n][2] = 0.0
+                    self.progress.advance(self.bar)
             self.live.update(self.render())
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
@@ -97,9 +106,9 @@ class _RichReporterCtx:
     def _on_start(self, n: Node):
         mem_hit = disk_hit = False
         if self.caches:
-            mem_hit, _ = self.caches[0].get(n.signature)
+            mem_hit, _ = self.caches[0].get(n.cache_key)
         if not mem_hit and len(self.caches) > 1:
-            disk_hit, _ = self.caches[1].get(n.signature)
+            disk_hit, _ = self.caches[1].get(n.cache_key)
         if mem_hit:
             self.status[n][0] = "Cached hit in Memory"
         elif disk_hit:
@@ -115,6 +124,7 @@ class _RichReporterCtx:
         if self.status[n][0] not in ("Cached hit in Memory", "Cached hit in Disk"):
             self.status[n][0] = "Executed"
         self.status[n][2] = dur
+        self.progress.advance(self.bar)
         self.live.update(self.render())
         if self.orig_end:
             self.orig_end(n, dur, cached)
@@ -128,7 +138,7 @@ class _RichReporterCtx:
     # --------------------------------------------------------------
     def render(self) -> Group:
         frame = self.spinner.render(time.perf_counter())
-        rows = []
+        rows = [self.progress.get_renderable()]
         for n in self.nodes:
             st, start, dur = self.status[n]
             if st == "Executing":

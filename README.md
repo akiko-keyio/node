@@ -54,12 +54,13 @@ print(result)  # 25
 ```python
 root = square(add(2, 3))
 print(repr(root))
-# square(z=add(x=2, y=3))
+# h_xxxxx = add(x=2, y=3)
+# h_yyyyy = square(z=h_xxxxx)
 ```
 
 ## 缓存与并行
 
-`Flow` 默认使用 `MemoryLRU` 和 `DiskJoblib` 组合成 `ChainCache`。缓存键即节点的 `signature` 字符串，磁盘缓存会以函数名创建子目录并尝试使用表达式作为文件名。这里的 `signature` 指节点的唯一字符串标识，由函数名及其参数构成，例如 `add(x=2, y=3)`：
+`Flow` 默认使用 `MemoryLRU` 和 `DiskJoblib` 组合成 `ChainCache`。缓存键为 `"<func>:<digest>"` 格式的哈希值，磁盘缓存统一存放在 `<func>/h_<digest6>.pkl`，同时写入 `h_<digest6>.py` 保存脚本：
 
 ```python
 from node.node import Flow, ChainCache, MemoryLRU, DiskJoblib
@@ -71,12 +72,11 @@ flow = Flow(
 )
 ```
 
-若表达式不适合作文件名，会回退到哈希值，并在同目录生成 `.py` 文件记录脚本。例如运行 `tutorial.py` 后可能出现：
+运行 `tutorial.py` 后将在缓存目录生成以下文件：
 
 ```
-.cache/inc/inc(x=3).pkl
-.cache/add/8be18ab9a193dbbc86b394bac923ab03.pkl
-.cache/add/8be18ab9a193dbbc86b394bac923ab03.py
+.cache/inc/h_abcdef.pkl
+.cache/inc/h_abcdef.py
 ```
 
 ## 配置对象

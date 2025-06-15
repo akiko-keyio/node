@@ -1,5 +1,6 @@
 from pathlib import Path
 from contextlib import nullcontext
+import threading
 
 import yaml  # type: ignore[import]
 import pytest
@@ -121,8 +122,12 @@ def test_build_script_repr(flow_factory):
         return z * z
 
     node = square(add(2, 3))
-    script = repr(node)
-    assert script.strip() == "square(z=add(x=2, y=3))"
+    script = repr(node).strip().splitlines()
+    var = node.deps[0].var
+    assert script == [
+        f"{var} = add(x=2, y=3)",
+        f"{node.var} = square(z={var})",
+    ]
 
 
 def test_linear_chain_repr(flow_factory):
@@ -141,7 +146,14 @@ def test_linear_chain_repr(flow_factory):
         return a
 
     node = f1(f2(f3(1)))
-    assert repr(node).strip() == "f1(a=f2(a=f3(a=1)))"
+    lines = repr(node).strip().splitlines()
+    v1 = node.deps[0].deps[0].var
+    v2 = node.deps[0].var
+    assert lines == [
+        f"{v1} = f3(a=1)",
+        f"{v2} = f2(a={v1})",
+        f"{node.var} = f1(a={v2})",
+    ]
 
 
 def test_diamond_dependency(flow_factory):
@@ -211,9 +223,10 @@ def test_repr_shared_nodes(flow_factory):
 
     node = combine(add(1, 2), add(1, 2))
     script = repr(node).strip().splitlines()
+    var = node.deps[0].var
     assert script == [
-        "n0 = add(x=1, y=2)",
-        "combine(a=n0, b=n0)",
+        f"{var} = add(x=1, y=2)",
+        f"{node.var} = combine(a={var}, b={var})",
     ]
 
 
@@ -248,13 +261,13 @@ def test_chaincache_promotion(flow_factory, tmp_path):
 
     node = add(2, 3)
     flow.run(node)
-    assert node.signature in mem._lru
+    assert node.cache_key in mem._lru
 
     mem._lru.clear()
-    assert node.signature not in mem._lru
+    assert node.cache_key not in mem._lru
 
     flow.run(node)
-    assert node.signature in mem._lru
+    assert node.cache_key in mem._lru
 
 
 def test_parallel_execution(flow_factory):
@@ -359,14 +372,7 @@ def test_cache_scripts(flow_factory, tmp_path):
     pkls = sorted(tmp_path.rglob("*.pkl"))
     pys = sorted(tmp_path.rglob("*.py"))
     assert len(pkls) == 4
-
-    for p in pkls:
-        if len(p.stem) == 32:
-            py = p.with_suffix(".py")
-            assert py.exists()
-        else:
-            assert not p.with_suffix(".py").exists()
-    assert len(pys) == sum(len(p.stem) == 32 for p in pkls)
+    assert len(pys) == 4
 
 
 def test_cache_fallback_hash(flow_factory, tmp_path, monkeypatch):
@@ -388,14 +394,8 @@ def test_cache_fallback_hash(flow_factory, tmp_path, monkeypatch):
     monkeypatch.setattr(joblib, "dump", bad_first_dump)
 
     node = inc(5)
-    assert flow.run(node) == 6
-
-    expr_file = disk._expr_path(node.signature)
-    assert not expr_file.exists()
-
-    pkl = disk._hash_path(node.signature)
-    assert pkl.exists()
-    assert pkl.with_suffix(".py").exists()
+    with pytest.raises(OSError):
+        flow.run(node)
 
 
 def test_ignore_signature_fields(flow_factory):
@@ -409,7 +409,7 @@ def test_ignore_signature_fields(flow_factory):
     n2 = add(1, 2, large_df=[3, 4], model="b")
 
     assert n1 is n2
-    assert n1.signature == "add(x=1, y=2)"
+    assert n1.signature.endswith("add(x=1, y=2)")
     assert flow.run(n1) == 3
 
 
@@ -426,16 +426,14 @@ def test_delete_cache(flow_factory, tmp_path):
 
     node = add(1, 2)
     assert flow.run(node) == 3
-    assert node.signature in mem._lru
+    assert node.cache_key in mem._lru
 
-    p = disk._expr_path(node.signature)
-    if not p.exists():
-        p = disk._hash_path(node.signature)
+    p = disk._path(node.cache_key)
     assert p.exists()
 
     node.delete_cache()
 
-    assert node.signature not in mem._lru
+    assert node.cache_key not in mem._lru
     assert not p.exists()
 
     assert flow.run(node) == 3
@@ -467,3 +465,38 @@ def test_default_reporter(flow_factory):
     assert flow.run(node, reporter=extra) == 3
     assert reporter.count == 1
     assert extra.count == 1
+
+
+def test_concurrent_node_construction(flow_factory):
+    flow = flow_factory()
+
+    @flow.node()
+    def add(x, y):
+        return x + y
+
+    results = []
+
+    def build():
+        results.append(add(1, 2))
+
+    threads = [threading.Thread(target=build) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert all(r is results[0] for r in results)
+
+
+def test_deep_chain_signature(flow_factory):
+    flow = flow_factory(cache=MemoryLRU())
+
+    @flow.node()
+    def inc(x):
+        return x + 1
+
+    node = inc(0)
+    for _ in range(200):
+        node = inc(node)
+
+    assert flow.run(node) == 201

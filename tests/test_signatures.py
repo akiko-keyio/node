@@ -32,8 +32,16 @@ def test_branch_no_diamond(flow_factory, tmp_path):
         return z * z
 
     node = square(add(square(1), square(2)))
-    expected = "square(z=add(x=square(z=1), y=square(z=2)))"
-    assert node.signature == expected
+    lines = node.signature.strip().splitlines()
+    a = node.deps[0].deps[0].var
+    b = node.deps[0].deps[1].var
+    c = node.deps[0].var
+    assert lines == [
+        f"{a} = square(z=1)",
+        f"{b} = square(z=2)",
+        f"{c} = add(x={a}, y={b})",
+        f"{node.var} = square(z={c})",
+    ]
 
 
 def test_signature_key_canonicalization():
@@ -60,7 +68,8 @@ def test_signature_script_dedup():
     root = Node(add, (a, b))
 
     lines = root.signature.strip().splitlines()
+    var = a.var
     assert lines == [
-        "n0 = add(x=1, y=2)",
-        "add(x=n0, y=n0)",
+        f"{var} = add(x=1, y=2)",
+        f"{root.var} = add(x={var}, y={var})",
     ]
