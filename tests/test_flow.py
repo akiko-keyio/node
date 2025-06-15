@@ -4,11 +4,11 @@ from contextlib import nullcontext
 import yaml  # type: ignore[import]
 import pytest
 import joblib  # type: ignore[import]
-from node.node import Node, Flow, Config, ChainCache, MemoryLRU, DiskJoblib
+from node.node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
 
 
-def test_flow_example(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_flow_example(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def add(x, y):
@@ -22,8 +22,8 @@ def test_flow_example(tmp_path):
     assert flow.run(root) == 25
 
 
-def test_node_get(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_node_get(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def add(x, y):
@@ -35,8 +35,8 @@ def test_node_get(tmp_path):
     assert node.get() == 5
 
 
-def test_generate_populates_cache(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_generate_populates_cache(flow_factory):
+    flow = flow_factory()
     calls = []
 
     @flow.node()
@@ -52,8 +52,8 @@ def test_generate_populates_cache(tmp_path):
     assert calls == [2]
 
 
-def test_cache_skips_execution(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_cache_skips_execution(flow_factory):
+    flow = flow_factory()
     calls = []
 
     @flow.node()
@@ -70,11 +70,9 @@ def test_cache_skips_execution(tmp_path):
     assert calls == [4]
 
 
-def test_defaults_override(tmp_path):
+def test_defaults_override(flow_factory):
     conf = Config({"add": {"y": 5}})
-    flow = Flow(
-        config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False
-    )
+    flow = flow_factory(config=conf)
 
     @flow.node()
     def add(x, y=1):
@@ -84,11 +82,9 @@ def test_defaults_override(tmp_path):
     assert flow.run(node) == 8
 
 
-def test_positional_args_ignore_config(tmp_path):
+def test_positional_args_ignore_config(flow_factory):
     conf = Config({"add": {"y": 5}})
-    flow = Flow(
-        config=conf, cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False
-    )
+    flow = flow_factory(config=conf)
 
     @flow.node()
     def add(x, y):
@@ -98,16 +94,12 @@ def test_positional_args_ignore_config(tmp_path):
     assert flow.run(node) == 5
 
 
-def test_config_from_yaml(tmp_path):
+def test_config_from_yaml(flow_factory):
     cfg_path = Path(__file__).with_name("config.yaml")
     with open(cfg_path) as f:
         defaults = yaml.safe_load(f)
 
-    flow = Flow(
-        config=Config(defaults),
-        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
-        log=False,
-    )
+    flow = flow_factory(config=Config(defaults))
 
     @flow.node()
     def add(x, y=1):
@@ -117,8 +109,8 @@ def test_config_from_yaml(tmp_path):
     assert flow.run(node) == 8
 
 
-def test_build_script_repr(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_build_script_repr(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def add(x, y):
@@ -133,8 +125,8 @@ def test_build_script_repr(tmp_path):
     assert script.strip() == "square(z=add(x=2, y=3))"
 
 
-def test_linear_chain_repr(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_linear_chain_repr(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def f1(a):
@@ -152,8 +144,8 @@ def test_linear_chain_repr(tmp_path):
     assert repr(node).strip() == "f1(a=f2(a=f3(a=1)))"
 
 
-def test_diamond_dependency(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_diamond_dependency(flow_factory):
+    flow = flow_factory()
     calls = []
 
     @flow.node()
@@ -193,8 +185,8 @@ def test_diamond_dependency(tmp_path):
     assert calls.count("final") == 1
 
 
-def test_node_deduplication(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_node_deduplication(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def add(x, y):
@@ -205,9 +197,9 @@ def test_node_deduplication(tmp_path):
     assert n1 is n2
 
 
-def test_repr_shared_nodes(tmp_path):
+def test_repr_shared_nodes(flow_factory):
     """repr should reuse the same variable for identical nodes."""
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+    flow = flow_factory()
 
     @flow.node()
     def add(x, y):
@@ -225,8 +217,8 @@ def test_repr_shared_nodes(tmp_path):
     ]
 
 
-def test_set_canonicalization(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_set_canonicalization(flow_factory):
+    flow = flow_factory()
     calls = []
 
     @flow.node()
@@ -245,10 +237,10 @@ def test_set_canonicalization(tmp_path):
     assert len(calls) == 1
 
 
-def test_chaincache_promotion(tmp_path):
+def test_chaincache_promotion(flow_factory, tmp_path):
     mem = MemoryLRU()
     disk = DiskJoblib(tmp_path)
-    flow = Flow(cache=ChainCache([mem, disk]), log=False)
+    flow = flow_factory(cache=ChainCache([mem, disk]))
 
     @flow.node()
     def add(x, y):
@@ -265,13 +257,8 @@ def test_chaincache_promotion(tmp_path):
     assert node.signature in mem._lru
 
 
-def test_parallel_execution(tmp_path):
-    flow = Flow(
-        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
-        executor="thread",
-        workers=2,
-        log=False,
-    )
+def test_parallel_execution(flow_factory):
+    flow = flow_factory(executor="thread", workers=2)
 
     @flow.node()
     def slow(v):
@@ -304,8 +291,8 @@ def test_cycle_detection():
         Node.__init__(node, ident, (node,), {})
 
 
-def test_dict_canonicalization(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_dict_canonicalization(flow_factory):
+    flow = flow_factory()
 
     @flow.node()
     def ident(x):
@@ -318,7 +305,7 @@ def test_dict_canonicalization(tmp_path):
     assert n1 is n2
 
 
-def test_callbacks_invoked(tmp_path):
+def test_callbacks_invoked(flow_factory):
     events = []
 
     def on_node_end(node, dur, cached):
@@ -327,10 +314,7 @@ def test_callbacks_invoked(tmp_path):
     def on_flow_end(root, wall, count):
         events.append(("flow", count))
 
-    flow = Flow(
-        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
-        log=False,
-    )
+    flow = flow_factory()
     flow.engine.on_node_end = on_node_end
     flow.engine.on_flow_end = on_flow_end
 
@@ -347,9 +331,9 @@ def test_callbacks_invoked(tmp_path):
     assert events == [("node", True), ("flow", 0)]
 
 
-def test_cache_scripts(tmp_path):
+def test_cache_scripts(flow_factory, tmp_path):
     disk = DiskJoblib(tmp_path)
-    flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
+    flow = flow_factory(cache=ChainCache([MemoryLRU(), disk]))
 
     @flow.node()
     def base(x):
@@ -385,9 +369,9 @@ def test_cache_scripts(tmp_path):
     assert len(pys) == sum(len(p.stem) == 32 for p in pkls)
 
 
-def test_cache_fallback_hash(tmp_path, monkeypatch):
+def test_cache_fallback_hash(flow_factory, tmp_path, monkeypatch):
     disk = DiskJoblib(tmp_path)
-    flow = Flow(cache=ChainCache([MemoryLRU(), disk]), log=False)
+    flow = flow_factory(cache=ChainCache([MemoryLRU(), disk]))
 
     @flow.node()
     def inc(x):
@@ -414,8 +398,8 @@ def test_cache_fallback_hash(tmp_path, monkeypatch):
     assert pkl.with_suffix(".py").exists()
 
 
-def test_ignore_signature_fields(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_ignore_signature_fields(flow_factory):
+    flow = flow_factory()
 
     @flow.node(ignore=["large_df", "model"])
     def add(x, y, large_df=None, model=None):
@@ -429,10 +413,10 @@ def test_ignore_signature_fields(tmp_path):
     assert flow.run(n1) == 3
 
 
-def test_delete_cache(tmp_path):
+def test_delete_cache(flow_factory, tmp_path):
     mem = MemoryLRU()
     disk = DiskJoblib(tmp_path)
-    flow = Flow(cache=ChainCache([mem, disk]), log=False)
+    flow = flow_factory(cache=ChainCache([mem, disk]))
     calls = []
 
     @flow.node()
@@ -458,7 +442,7 @@ def test_delete_cache(tmp_path):
     assert calls == [1, 1]
 
 
-def test_default_reporter(tmp_path):
+def test_default_reporter(flow_factory):
     class DummyReporter:
         def __init__(self):
             self.count = 0
@@ -468,11 +452,7 @@ def test_default_reporter(tmp_path):
             return nullcontext()
 
     reporter = DummyReporter()
-    flow = Flow(
-        cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]),
-        reporter=reporter,
-        log=False,
-    )
+    flow = flow_factory(reporter=reporter)
 
     @flow.node()
     def add(x, y):

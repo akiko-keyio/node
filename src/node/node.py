@@ -150,40 +150,29 @@ class DiskJoblib(Cache):
         return self._subdir(key) / (md + ext)
 
     def get(self, key: str):
-        p = self._expr_path(key)
-        if p.exists():
-            return True, joblib.load(p)
-        p = self._hash_path(key)
-        if p.exists():
-            return True, joblib.load(p)
+        for p in (self._expr_path(key), self._hash_path(key)):
+            if p.exists():
+                return True, joblib.load(p)
         return False, MISS
 
     def put(self, key: str, value: Any):
-        p = self._expr_path(key)
-        lock_path = str(p) + ".lock"
-        ctx = FileLock(lock_path) if self.lock else nullcontext()
-        with suppress(OSError):
-            with ctx:
-                joblib.dump(value, p)
-            return
-
-        p = self._hash_path(key)
-        lock_path = str(p) + ".lock"
-        ctx = FileLock(lock_path) if self.lock else nullcontext()
-        with ctx:
-            joblib.dump(value, p)
+        for path_fn in (self._expr_path, self._hash_path):
+            p = path_fn(key)
+            lock_path = str(p) + ".lock"
+            ctx = FileLock(lock_path) if self.lock else nullcontext()
+            try:
+                with ctx:
+                    joblib.dump(value, p)
+                return
+            except OSError:
+                continue
 
     def delete(self, key: str) -> None:
-        expr_p = self._expr_path(key)
         hash_p = self._hash_path(key)
-        for p in (expr_p, hash_p):
+        for p in (self._expr_path(key), hash_p, hash_p.with_suffix(".py")):
             if p.exists():
                 with suppress(OSError):
                     p.unlink()
-        py = hash_p.with_suffix(".py")
-        if py.exists():
-            with suppress(OSError):
-                py.unlink()
 
     def save_script(self, node: "Node"):
         if self._expr_path(node.signature).exists():
@@ -267,6 +256,11 @@ class Node:
             script, _ = _build_script(self)
             self.signature = script
 
+    def _require_flow(self) -> "Flow":
+        if self.flow is None:
+            raise RuntimeError("Node has no associated Flow")
+        return self.flow
+
     def _detect_cycle(self):
         try:
             _topo_order(self)
@@ -277,21 +271,16 @@ class Node:
         return self.signature
 
     def get(self):
-        if self.flow is None:
-            raise RuntimeError("Node has no associated Flow")
-        return self.flow.run(self)
+        return self._require_flow().run(self)
 
     def delete_cache(self) -> None:
-        if self.flow is None:
-            raise RuntimeError("Node has no associated Flow")
-        if hasattr(self.flow.engine.cache, "delete"):
-            self.flow.engine.cache.delete(self.signature)
+        flow = self._require_flow()
+        if hasattr(flow.engine.cache, "delete"):
+            flow.engine.cache.delete(self.signature)
 
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
-        if self.flow is None:
-            raise RuntimeError("Node has no associated Flow")
-        self.flow.generate(self)
+        self._require_flow().generate(self)
 
 
 # ----------------------------------------------------------------------

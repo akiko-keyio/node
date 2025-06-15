@@ -1,8 +1,8 @@
-from node.node import Node, Flow, ChainCache, MemoryLRU, DiskJoblib
+from node.node import Node, ChainCache, MemoryLRU, DiskJoblib
 
 
-def test_repr_matches_signature(tmp_path):
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+def test_repr_matches_signature(flow_factory, tmp_path):
+    flow = flow_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
 
     @flow.node()
     def add(x, y):
@@ -19,9 +19,9 @@ def test_repr_matches_signature(tmp_path):
     assert repr(diamond) == diamond.signature
 
 
-def test_branch_no_diamond(tmp_path):
+def test_branch_no_diamond(flow_factory, tmp_path):
     """Branching without shared nodes should not expand to a script."""
-    flow = Flow(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]), log=False)
+    flow = flow_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
 
     @flow.node()
     def add(x, y):
