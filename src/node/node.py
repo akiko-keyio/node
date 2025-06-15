@@ -9,7 +9,7 @@ import functools
 import os
 import threading
 import time
-from collections import defaultdict, deque, OrderedDict
+from collections import deque, OrderedDict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -162,12 +162,8 @@ class MemoryLRU(Cache):
 class DiskJoblib(Cache):
     """Filesystem cache using joblib pickles.
 
-    Results are stored under ``<func>/<expr>.pkl`` whenever possible.  If the
-    expression cannot be used as a file name, the fallback ``<hash>.pkl`` is
-    used and ``<hash>.py`` contains ``repr(node)`` for inspection.
-
-    Results are stored as ``<hash>.pkl``.  A human readable ``<hash>.py`` file
-    containing ``repr(node)`` is also written for inspection.
+    Results are stored under ``<func>/<hash>.pkl`` and the corresponding script
+    is written to ``<func>/<hash>.py`` for inspection.
     """
 
     def __init__(self, root: str | Path = ".cache", lock: bool = True):
@@ -175,50 +171,35 @@ class DiskJoblib(Cache):
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
 
-    def _subdir(self, key: str) -> Path:
-        """Return the directory corresponding to the node's function name."""
-        lines = key.strip().splitlines()[-1]
-        fn_name = lines.split("(", 1)[0]
-        sub = self.root / fn_name
+    def _path(self, key: str, ext: str = ".pkl") -> Path:
+        """Return the cache file path for ``key``."""
+        fn, hash_key = key.split(":", 1)
+        sub = self.root / fn
         sub.mkdir(parents=True, exist_ok=True)
-        return sub
-
-    def _expr_path(self, key: str, ext: str = ".pkl") -> Path:
-        return self._subdir(key) / (key + ext)
-
-    def _hash_path(self, key: str, ext: str = ".pkl") -> Path:
-        md = hashlib.md5(key.encode()).hexdigest()
-        return self._subdir(key) / (md + ext)
+        return sub / (f"h_{hash_key[:6]}" + ext)
 
     def get(self, key: str):
-        for p in (self._expr_path(key), self._hash_path(key)):
-            if p.exists():
-                return True, joblib.load(p)
+        p = self._path(key)
+        if p.exists():
+            return True, joblib.load(p)
         return False, MISS
 
     def put(self, key: str, value: Any):
-        for path_fn in (self._expr_path, self._hash_path):
-            p = path_fn(key)
-            lock_path = str(p) + ".lock"
-            ctx = FileLock(lock_path) if self.lock else nullcontext()
-            try:
-                with ctx:
-                    joblib.dump(value, p)
-                return
-            except OSError:
-                continue
+        p = self._path(key)
+        lock_path = str(p) + ".lock"
+        ctx = FileLock(lock_path) if self.lock else nullcontext()
+        with ctx:
+            joblib.dump(value, p)
 
     def delete(self, key: str) -> None:
-        hash_p = self._hash_path(key)
-        for p in (self._expr_path(key), hash_p, hash_p.with_suffix(".py")):
+        for ext in (".pkl", ".py"):
+            p = self._path(key, ext)
             if p.exists():
                 with suppress(OSError):
                     p.unlink()
 
     def save_script(self, node: "Node"):
-        if self._expr_path(node.signature).exists():
-            return
-        p = self._hash_path(node.signature, ".py")
+        p = self._path(node.cache_key, ".py")
         p.write_text(repr(node) + "\n")
 
 
@@ -326,6 +307,11 @@ class Node:
     def var(self) -> str:
         return f"h_{self._hash[:6]}"
 
+    @property
+    def cache_key(self) -> str:
+        """Unique deterministic key used for caching."""
+        return f"{self.fn.__name__}:{self._hash}"
+
     def lines(self) -> List[Tuple[str, str]]:
         """Return script lines for this node without trailing call."""
         with self._lock:
@@ -372,39 +358,12 @@ class Node:
             if self.__signature is not None:
                 return self.__signature
 
-        if _is_linear_chain(self):
-            var_map = {d: d.var for d in self.deps}
-            ignore = getattr(self.fn, "_node_ignore", ())
-            result = _render_call(
-                self.fn,
-                self.args,
-                self.kwargs,
-                canonical=True,
-                mapping=var_map,
-                ignore=ignore,
-            )
-        else:
-            result = self._non_linear_signature()
+        lines = [line for _, line in self.lines()]
+        result = "\n".join(lines)
 
         with self._lock:
             self.__signature = result
         return result
-
-    def _non_linear_signature(self) -> str:
-        self.lines()  # ensure populated
-        var_map = {d: d.var for d in self.deps}
-        ignore = getattr(self.fn, "_node_ignore", ())
-        call = _render_call(
-            self.fn,
-            self.args,
-            self.kwargs,
-            canonical=True,
-            mapping=var_map,
-            ignore=ignore,
-        )
-        lines = [line for _, line in self.lines()[:-1]]
-        lines.append(call)
-        return "\n".join(lines)
 
     @property
     def signature(self) -> str:
@@ -416,7 +375,7 @@ class Node:
     def delete_cache(self) -> None:
         flow = self._require_flow()
         if hasattr(flow.engine.cache, "delete"):
-            flow.engine.cache.delete(self.signature)
+            flow.engine.cache.delete(self.cache_key)
 
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
@@ -488,25 +447,6 @@ def _render_call(
     return res
 
 
-def _is_linear_chain(root: Node) -> bool:
-    """Return ``True`` if the graph rooted at ``root`` has no diamond dependencies."""
-
-    indeg: Dict[str, int] = defaultdict(int)
-    seen: set[Node] = set()
-    stack = [root]
-    while stack:
-        n = stack.pop()
-        if n in seen:
-            continue
-        seen.add(n)
-        for d in n.deps:  # ``deps`` already contains only ``Node`` objects
-            indeg[d._hash] += 1
-            if indeg[d._hash] > 1:
-                return False
-            stack.append(d)
-    return True
-
-
 # ----------------------------------------------------------------------
 # engine
 # ----------------------------------------------------------------------
@@ -537,7 +477,7 @@ class Engine:
     # ------------------------------------------------------------------
     def _resolve(self, v):
         if isinstance(v, Node):
-            hit, val = self.cache.get(v.signature)
+            hit, val = self.cache.get(v.cache_key)
             return val if hit else None
         return v
 
@@ -545,7 +485,7 @@ class Engine:
         start = time.perf_counter()
         if self.on_node_start:
             self.on_node_start(n)
-        hit, val = self.cache.get(n.signature)
+        hit, val = self.cache.get(n.cache_key)
         if hit:
             dur = time.perf_counter() - start
             if self.on_node_end:
@@ -555,7 +495,7 @@ class Engine:
         args = [self._resolve(a) for a in n.args]
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         val = n.fn(*args, **kwargs)
-        self.cache.put(n.signature, val)
+        self.cache.put(n.cache_key, val)
         if self._can_save:
             self.cache.save_script(n)
         dur = time.perf_counter() - start
@@ -570,7 +510,7 @@ class Engine:
         self._exec_count = 0
 
         t0 = time.perf_counter()
-        hit, val = self.cache.get(root.signature)
+        hit, val = self.cache.get(root.cache_key)
         if hit:
             if self.on_node_start:
                 self.on_node_start(root)
@@ -626,7 +566,7 @@ class Engine:
         self.on_node_end = orig_end
         if self.on_flow_end:
             self.on_flow_end(root, wall, self._exec_count)
-        return self.cache.get(root.signature)[1]
+        return self.cache.get(root.cache_key)[1]
 
 
 # ----------------------------------------------------------------------
