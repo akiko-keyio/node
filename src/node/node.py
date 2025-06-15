@@ -1,14 +1,4 @@
-"""
-zen_flow.py – minimal DAG + two-tier cache (rev-6, 2025-05-31)
-
-Fixes applied
--------------
-* add missing import for WeakValueDictionary
-* make MemoryLRU thread-safe
-* protect ChainCache promotions with a lock
-* guard ProcessPool on Windows (pickle issues)
-* canonicalise `set` objects when building signatures
-"""
+"""Minimal DAG engine with in-memory and disk caching."""
 
 from __future__ import annotations
 
@@ -31,7 +21,7 @@ from contextlib import nullcontext, suppress
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
-from weakref import WeakValueDictionary  # ★ NEW
+from weakref import WeakValueDictionary
 
 import joblib  # type: ignore[import]
 from cachetools import LRUCache  # type: ignore[import]
@@ -73,7 +63,7 @@ def _canonical(obj: Any) -> str:
     if isinstance(obj, (list, tuple)):
         inner = ", ".join(_canonical(v) for v in obj)
         return "[" + inner + "]" if isinstance(obj, list) else "(" + inner + ")"
-    if isinstance(obj, set):  # ★ NEW – make set order deterministic
+    if isinstance(obj, set):
         inner = ", ".join(_canonical(v) for v in sorted(obj))
         return "{" + inner + "}"
     return repr(obj)
@@ -101,16 +91,16 @@ class MemoryLRU(Cache):
 
     def __init__(self, maxsize: int = 512):
         self._lru: LRUCache[str, Any] = LRUCache(maxsize=maxsize)
-        self._lock = threading.Lock()  # ★ NEW
+        self._lock = threading.Lock()
 
     def get(self, key: str):
-        with self._lock:  # ★ NEW
+        with self._lock:
             if key in self._lru:
                 return True, self._lru[key]
         return False, MISS
 
     def put(self, key: str, value: Any):
-        with self._lock:  # ★ NEW
+        with self._lock:
             self._lru[key] = value
 
     def delete(self, key: str) -> None:
@@ -186,10 +176,10 @@ class ChainCache(Cache):
 
     def __init__(self, caches: Sequence[Cache]):
         self.caches = list(caches)
-        self._lock = threading.Lock()  # ★ NEW
+        self._lock = threading.Lock()
 
     def get(self, key: str):
-        with self._lock:  # ★ NEW – protects promotion
+        with self._lock:
             for i, c in enumerate(self.caches):
                 hit, val = c.get(key)
                 if hit:
@@ -608,21 +598,3 @@ class Flow:
     def generate(self, root: Node) -> None:
         """Compute and cache ``root`` without returning the value."""
         self.engine.run(root)
-
-
-# ----------------------------------------------------------------------
-# simple example
-# ----------------------------------------------------------------------
-if __name__ == "__main__":
-    flow = Flow()
-
-    @flow.node()
-    def add(x, y):
-        return x + y
-
-    @flow.node()
-    def square(z):
-        return z * z
-
-    out = flow.run(square(add(2, 3)))
-    print("result =", out)  # 25
