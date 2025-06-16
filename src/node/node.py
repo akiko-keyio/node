@@ -278,6 +278,18 @@ class Node:
             raise ValueError("Cycle detected in DAG")
         self._ancestors = ancestors
 
+    # --------------------------------------------------------------
+    def __getstate__(self):
+        return {
+            k: getattr(self, k) for k in self.__slots__ if k not in {"flow", "_lock"}
+        }
+
+    def __setstate__(self, state):
+        for k, v in state.items():
+            setattr(self, k, v)
+        self.flow = None
+        self._lock = threading.Lock()
+
     def _require_flow(self) -> "Flow":
         if self.flow is None:
             raise RuntimeError("Node has no associated Flow")
@@ -416,6 +428,10 @@ def _render_call(
     return res
 
 
+def _call_fn(fn: Callable, args: Sequence[Any], kwargs: Mapping[str, Any]) -> Any:
+    return fn(*args, **kwargs)
+
+
 # ----------------------------------------------------------------------
 # engine
 # ----------------------------------------------------------------------
@@ -450,12 +466,12 @@ class Engine:
 
     def _eval_node(self, n: Node):
         start = time.perf_counter()
-        if self.on_node_start:
+        if self.on_node_start is not None:
             self.on_node_start(n)
         hit, val = self.cache.get(n.key)
         if hit:
             dur = time.perf_counter() - start
-            if self.on_node_end:
+            if self.on_node_end is not None:
                 self.on_node_end(n, dur, True)
             return val
 
@@ -466,7 +482,7 @@ class Engine:
         if self._can_save:
             self.cache.save_script(n)
         dur = time.perf_counter() - start
-        if self.on_node_end:
+        if self.on_node_end is not None:
             self.on_node_end(n, dur, False)
         with self._lock:
             self._exec_count += 1
@@ -479,11 +495,11 @@ class Engine:
         t0 = time.perf_counter()
         hit, val = self.cache.get(root.key)
         if hit:
-            if self.on_node_start:
+            if self.on_node_start is not None:
                 self.on_node_start(root)
-            if self.on_node_end:
+            if self.on_node_end is not None:
                 self.on_node_end(root, time.perf_counter() - t0, True)
-            if self.on_flow_end:
+            if self.on_flow_end is not None:
                 self.on_flow_end(root, time.perf_counter() - t0, 0)
             return val
 
@@ -494,11 +510,11 @@ class Engine:
         orig_end = self.on_node_end
 
         def start_cb(n):
-            if orig_start:
+            if orig_start is not None:
                 orig_start(n)
 
         def end_cb(n, dur, cached):
-            if orig_end:
+            if orig_end is not None:
                 orig_end(n, dur, cached)
 
         self.on_node_start = start_cb
@@ -514,7 +530,22 @@ class Engine:
         with pool_cls(max_workers=self.workers) as pool:
 
             def submit(node):
-                fut_map[pool.submit(self._eval_node, node)] = node
+                if self.executor == "thread":
+                    fut_map[pool.submit(self._eval_node, node)] = node
+                else:
+                    start = time.perf_counter()
+                    if self.on_node_start:
+                        self.on_node_start(node)
+                    hit, val = self.cache.get(node.key)
+                    if hit:
+                        if self.on_node_end:
+                            self.on_node_end(node, time.perf_counter() - start, True)
+                        ts.done(node)
+                        return
+                    args = [self._resolve(a) for a in node.args]
+                    kwargs = {k: self._resolve(v) for k, v in node.kwargs.items()}
+                    fut = pool.submit(_call_fn, node.fn, args, kwargs)
+                    fut_map[fut] = (node, start)
 
             for n in ts.get_ready():
                 submit(n)
@@ -522,8 +553,21 @@ class Engine:
             while fut_map:
                 done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
                 for fut in done:
-                    node = fut_map.pop(fut)
-                    fut.result()  # re-raise errors immediately
+                    info = fut_map.pop(fut)
+                    if self.executor == "thread":
+                        node = info
+                        fut.result()  # re-raise errors immediately
+                    else:
+                        node, start = info
+                        val = fut.result()
+                        self.cache.put(node.key, val)
+                        if self._can_save:
+                            self.cache.save_script(node)
+                        dur = time.perf_counter() - start
+                        if self.on_node_end is not None:
+                            self.on_node_end(node, dur, False)
+                        with self._lock:
+                            self._exec_count += 1
                     ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
@@ -531,7 +575,7 @@ class Engine:
         wall = time.perf_counter() - t0
         self.on_node_start = orig_start
         self.on_node_end = orig_end
-        if self.on_flow_end:
+        if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count)
         return self.cache.get(root.key)[1]
 
