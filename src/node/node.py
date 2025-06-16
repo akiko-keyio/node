@@ -9,6 +9,7 @@ import functools
 import os
 import threading
 import time
+import warnings
 from collections import deque, OrderedDict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import (
@@ -233,6 +234,7 @@ class Node:
         "deps",
         "flow",
         "_hash",
+        "_raw",
         "_lock",
         "__dict__",
         "__weakref__",
@@ -267,6 +269,7 @@ class Node:
             _canonical_args(self),
             child_hashes,
         )
+        self._raw = raw
         _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
         self._hash = int(_hash, 16)
         self._lock = threading.Lock()
@@ -288,7 +291,12 @@ class Node:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Node):
             return False
-        return hash(self) == hash(other)
+        if self._hash != other._hash:
+            return False
+        if self._raw != other._raw:
+            warnings.warn("Hash collision detected between Nodes", RuntimeWarning)
+            return False
+        return True
 
     def __hash__(self) -> int:
         return self.hash
