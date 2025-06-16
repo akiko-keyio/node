@@ -18,7 +18,7 @@ def build_flow() -> Tuple[Any, Any]:
     t0 = time.perf_counter()
     N = 200
     print("Starting building flow")
-    grid = [[None] * N for _ in range(N)]
+    grid: list[list[Any]] = [[None] * N for _ in range(N)]
     for i in range(N):
         for j in range(N):
             if i == j == 0:
