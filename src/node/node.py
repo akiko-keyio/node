@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import enum
 import hashlib
 import inspect
 import functools
@@ -20,7 +19,7 @@ from concurrent.futures import (
 from contextlib import nullcontext, suppress
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from weakref import WeakValueDictionary
 
 import joblib  # type: ignore[import]
@@ -46,11 +45,6 @@ if TYPE_CHECKING:  # pragma: no cover - for type checking only
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
-class _Sentinel(enum.Enum):
-    MISS = enum.auto()
-
-
-MISS = _Sentinel.MISS
 
 # global caches & locks
 _can_lock = threading.Lock()
@@ -137,7 +131,7 @@ class MemoryLRU(Cache):
         with self._lock:
             if key in self._lru:
                 return True, self._lru[key]
-        return False, MISS
+        return False, None
 
     def put(self, key: str, value: Any):
         with self._lock:
@@ -171,7 +165,7 @@ class DiskJoblib(Cache):
         p = self._path(key)
         if p.exists():
             return True, joblib.load(p)
-        return False, MISS
+        return False, None
 
     def put(self, key: str, value: Any):
         p = self._path(key)
@@ -207,7 +201,7 @@ class ChainCache(Cache):
                     for earlier in self.caches[:i]:
                         earlier.put(key, val)
                     return True, val
-        return False, MISS
+        return False, None
 
     def put(self, key: str, value: Any):
         for c in self.caches:
@@ -553,13 +547,13 @@ class Flow:
         executor: str = "thread",
         workers: int | None = None,
         log: bool = True,
-        reporter=_Sentinel.MISS,
+        reporter: Optional[Any] = None,
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
         self.log = log
-        if reporter is _Sentinel.MISS:
+        if reporter is None:
             try:  # defer import to avoid cycle
                 from .reporters import RichReporter as _RR
             except Exception:
