@@ -41,7 +41,7 @@ class _RichReporterCtx:
         h2node = {n._hash: n for n in order}
         nodes: List[Node] = []
         labels: Dict[Node, str] = {}
-        for h, line in root.lines():
+        for h, line in root.lines:
             n = h2node[h]
             nodes.append(n)
             label = line
