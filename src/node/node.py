@@ -226,13 +226,11 @@ class ChainCache(Cache):
 
     def delete(self, key: str) -> None:
         for c in self.caches:
-            if hasattr(c, "delete"):
-                c.delete(key)
+            c.delete(key)
 
     def save_script(self, node: "Node"):
         for c in self.caches:
-            if hasattr(c, "save_script"):
-                c.save_script(node)
+            c.save_script(node)
 
 
 # ----------------------------------------------------------------------
@@ -373,9 +371,7 @@ class Node:
         return self._require_flow().run(self)
 
     def delete_cache(self) -> None:
-        flow = self._require_flow()
-        if hasattr(flow.engine.cache, "delete"):
-            flow.engine.cache.delete(self.cache_key)
+        self._require_flow().engine.cache.delete(self.cache_key)
 
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
