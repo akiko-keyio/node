@@ -14,7 +14,6 @@ from node.node import ChainCache, DiskJoblib, Flow, MemoryLRU
 def flow_factory(tmp_path):
     def _make(**kwargs) -> Flow:
         cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
-        kwargs.setdefault("log", False)
         return Flow(cache=cache, **kwargs)
 
     return _make
