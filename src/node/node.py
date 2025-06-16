@@ -57,7 +57,7 @@ _render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
 def _canonical(obj: Any) -> str:
     """Convert an object into a deterministic string representation."""
     if isinstance(obj, Node):
-        return obj.signature
+        return obj.key
 
     key = (id(obj), repr(obj))
     with _can_lock:
@@ -258,6 +258,10 @@ class Node:
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
 
+        for d in self.deps:
+            if d is self:
+                raise ValueError("Cycle detected in DAG")
+
         child_hashes = tuple(d._hash for d in self.deps)
         raw = (
             self.fn.__qualname__,
@@ -393,11 +397,16 @@ def _render_call(
             )
         return _canonical(v) if canonical else repr(v)
 
+    def key_of(v: Any) -> str:
+        if isinstance(v, Node):
+            return v.key
+        return repr(v)
+
     key = (
         fn.__qualname__,
         canonical,
-        tuple(repr(a) for a in args),
-        tuple(sorted((k, repr(v)) for k, v in kwargs.items())),
+        tuple(key_of(a) for a in args),
+        tuple(sorted((k, key_of(v)) for k, v in kwargs.items())),
         tuple(sorted((d._hash, v) for d, v in mapping.items())) if mapping else None,
         tuple(sorted(ignore or [])),
     )

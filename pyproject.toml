@@ -22,3 +22,9 @@ node = "node:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.mypy]
+packages = ["node"]
+explicit_package_bases = true
+no_site_packages = true
+ignore_missing_imports = true
