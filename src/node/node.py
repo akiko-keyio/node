@@ -18,7 +18,7 @@ from concurrent.futures import (
     wait,
 )
 from contextlib import nullcontext, suppress
-from graphlib import CycleError, TopologicalSorter
+from graphlib import TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from weakref import WeakValueDictionary
@@ -274,10 +274,16 @@ class Node:
         return self.flow
 
     def _detect_cycle(self):
-        try:
-            _topo_order(self)
-        except CycleError as e:
-            raise ValueError("Cycle detected in DAG") from e
+        stack = list(self.deps)
+        seen = set()
+        while stack:
+            n = stack.pop()
+            if n is self:
+                raise ValueError("Cycle detected in DAG")
+            if n in seen:
+                continue
+            seen.add(n)
+            stack.extend(n.deps)
 
     def __repr__(self):
         return self.signature
@@ -319,19 +325,25 @@ class Node:
             return self._compute_lines()
 
     def _compute_lines(self) -> List[Tuple[int, str]]:
-        lines = _merge_lines(self.deps)
-        var_map = {d: d.var for d in self.deps}
-        ignore = getattr(self.fn, "_node_ignore", ())
-        call = _render_call(
-            self.fn,
-            self.args,
-            self.kwargs,
-            canonical=True,
-            mapping=var_map,
-            ignore=ignore,
-        )
-        lines.append((self._hash, f"{self.var} = {call}"))
+        order = self.order
+        lines: List[Tuple[int, str]] = []
+        for node in order:
+            var_map = {d: d.var for d in node.deps}
+            ignore = getattr(node.fn, "_node_ignore", ())
+            call = _render_call(
+                node.fn,
+                node.args,
+                node.kwargs,
+                canonical=True,
+                mapping=var_map,
+                ignore=ignore,
+            )
+            lines.append((node._hash, f"{node.var} = {call}"))
         return lines
+
+    @functools.cached_property
+    def order(self) -> List["Node"]:
+        return _topo_order(self)
 
     @functools.cached_property
     def signature(self) -> str:
@@ -487,7 +499,7 @@ class Engine:
             return val
 
         t0 = time.perf_counter()
-        order = _topo_order(root)
+        order = root.order
 
         orig_start = self.on_node_start
         orig_end = self.on_node_end
