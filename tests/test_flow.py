@@ -123,10 +123,10 @@ def test_build_script_repr(flow_factory):
 
     node = square(add(2, 3))
     script = repr(node).strip().splitlines()
-    var = node.deps[0].var
+    var = node.deps[0].key
     assert script == [
         f"{var} = add(x=2, y=3)",
-        f"{node.var} = square(z={var})",
+        f"{node.key} = square(z={var})",
     ]
 
 
@@ -147,12 +147,12 @@ def test_linear_chain_repr(flow_factory):
 
     node = f1(f2(f3(1)))
     lines = repr(node).strip().splitlines()
-    v1 = node.deps[0].deps[0].var
-    v2 = node.deps[0].var
+    v1 = node.deps[0].deps[0].key
+    v2 = node.deps[0].key
     assert lines == [
         f"{v1} = f3(a=1)",
         f"{v2} = f2(a={v1})",
-        f"{node.var} = f1(a={v2})",
+        f"{node.key} = f1(a={v2})",
     ]
 
 
@@ -223,10 +223,10 @@ def test_repr_shared_nodes(flow_factory):
 
     node = combine(add(1, 2), add(1, 2))
     script = repr(node).strip().splitlines()
-    var = node.deps[0].var
+    var = node.deps[0].key
     assert script == [
         f"{var} = add(x=1, y=2)",
-        f"{node.var} = combine(a={var}, b={var})",
+        f"{node.key} = combine(a={var}, b={var})",
     ]
 
 
@@ -261,13 +261,13 @@ def test_chaincache_promotion(flow_factory, tmp_path):
 
     node = add(2, 3)
     flow.run(node)
-    assert node.cache_key in mem._lru
+    assert node.key in mem._lru
 
     mem._lru.clear()
-    assert node.cache_key not in mem._lru
+    assert node.key not in mem._lru
 
     flow.run(node)
-    assert node.cache_key in mem._lru
+    assert node.key in mem._lru
 
 
 def test_parallel_execution(flow_factory):
@@ -426,14 +426,14 @@ def test_delete_cache(flow_factory, tmp_path):
 
     node = add(1, 2)
     assert flow.run(node) == 3
-    assert node.cache_key in mem._lru
+    assert node.key in mem._lru
 
-    p = disk._path(node.cache_key)
+    p = disk._path(node.key)
     assert p.exists()
 
     node.delete_cache()
 
-    assert node.cache_key not in mem._lru
+    assert node.key not in mem._lru
     assert not p.exists()
 
     assert flow.run(node) == 3
