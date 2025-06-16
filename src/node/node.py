@@ -230,6 +230,7 @@ class Node:
         "_hash",
         "_raw",
         "_lock",
+        "_ancestors",
         "__dict__",
         "__weakref__",
     )
@@ -255,7 +256,17 @@ class Node:
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
 
-        self._detect_cycle()
+        ancestors: set[Node] = set()
+        for d in self.deps:
+            if d is self:
+                raise ValueError("Cycle detected in DAG")
+            anc = getattr(d, "_ancestors", None)
+            if anc:
+                ancestors.update(anc)
+            ancestors.add(d)
+        if self in ancestors:
+            raise ValueError("Cycle detected in DAG")
+        self._ancestors = ancestors
 
         child_hashes = tuple(d._hash for d in self.deps)
         raw = (
