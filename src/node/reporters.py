@@ -9,7 +9,13 @@ from rich.live import Live  # type: ignore[import]
 from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
-from rich.progress import Progress  # type: ignore[import]
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from .node import Node, ChainCache, _topo_order
 
@@ -66,7 +72,13 @@ class _RichReporterCtx:
 
         self.spinner = Spinner("dots")
 
+        self.start = time.perf_counter()
+
         self.progress = Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
             transient=True,
             refresh_per_second=self.reporter.refresh_per_second,
         )
@@ -74,6 +86,10 @@ class _RichReporterCtx:
 
         self.engine.on_node_start = self._on_start
         self.engine.on_node_end = self._on_end
+
+        self.last_done = None
+        self.window = 10 + self.engine.workers
+        self.truncate = len(self.nodes) > self.window
 
         self.live = Live(
             self.render(), refresh_per_second=self.reporter.refresh_per_second
@@ -124,6 +140,7 @@ class _RichReporterCtx:
         if self.status[n][0] not in ("Cached hit in Memory", "Cached hit in Disk"):
             self.status[n][0] = "Executed"
         self.status[n][2] = dur
+        self.last_done = n
         self.progress.advance(self.bar)
         self.live.update(self.render())
         if self.orig_end:
@@ -136,31 +153,51 @@ class _RichReporterCtx:
             time.sleep(sleep)
 
     # --------------------------------------------------------------
+    def _format_line(self, n: Node, frame: Spinner) -> Text:
+        st, start, dur = self.status[n]
+        if st == "Executing":
+            icon = str(frame)
+            elapsed = time.perf_counter() - (start or time.perf_counter())
+            extra = f" [{elapsed:.3f}s]"
+            style = ""
+        elif st == "Pending":
+            icon = "●"
+            extra = ""
+            style = "yellow"
+        elif st == "Skipped":
+            icon = "●"
+            extra = " (skip)"
+            style = "grey50"
+        else:
+            icon = "✔"
+            extra = ""
+            if st.startswith("Cached hit"):
+                extra = f" ({st.split()[-1].lower()})"
+            if dur:
+                extra += f" [{dur:.3f}s]"
+            style = "blue"
+        return Text(f"{icon} {self.labels[n]}{extra}", style=style)
+
+    # --------------------------------------------------------------
     def render(self) -> Group:
         frame = self.spinner.render(time.perf_counter())
         rows = [self.progress.get_renderable()]
-        for n in self.nodes:
-            st, start, dur = self.status[n]
-            if st == "Executing":
-                icon = str(frame)
-                elapsed = time.perf_counter() - (start or time.perf_counter())
-                extra = f" [{elapsed:.3f}s]"
-                style = ""
-            elif st == "Pending":
-                icon = "●"
-                extra = ""
-                style = "yellow"
-            elif st == "Skipped":
-                icon = "●"
-                extra = " (skip)"
-                style = "grey50"
+
+        nodes = self.nodes
+        if self.truncate:
+            idx = {n: i for i, n in enumerate(nodes)}
+            running_idx = [idx[n] for n in nodes if self.status[n][0] == "Executing"]
+            if running_idx:
+                start = max(0, min(running_idx) - 5)
+                end = min(len(nodes), max(running_idx) + 1 + 5)
+            elif self.last_done:
+                pos = idx[self.last_done]
+                start = max(0, pos - 5)
+                end = min(len(nodes), pos + 1 + 5)
             else:
-                icon = "✔"
-                extra = ""
-                if st.startswith("Cached hit"):
-                    extra = f" ({st.split()[-1].lower()})"
-                if dur:
-                    extra += f" [{dur:.3f}s]"
-                style = "blue"
-            rows.append(Text(f"{icon} {self.labels[n]}{extra}", style=style))
+                start = 0
+                end = self.window
+            nodes = nodes[start:end]
+
+        rows.extend(self._format_line(n, frame) for n in nodes)
         return Group(*rows)
