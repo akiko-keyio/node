@@ -157,10 +157,12 @@ class DiskJoblib(Cache):
 
     def _path(self, key: str, ext: str = ".pkl") -> Path:
         """Return the cache file path for ``key``."""
-        fn, hash_key = key.split(":", 1)
+        parts = key.rsplit("_", 1)
+        fn = parts[0]
+        hash_key = parts[1]
         sub = self.root / fn
         sub.mkdir(parents=True, exist_ok=True)
-        return sub / (f"h_{hash_key[:6]}" + ext)
+        return sub / (hash_key + ext)
 
     def get(self, key: str):
         p = self._path(key)
@@ -183,7 +185,7 @@ class DiskJoblib(Cache):
                     p.unlink()
 
     def save_script(self, node: "Node"):
-        p = self._path(node.cache_key, ".py")
+        p = self._path(node.key, ".py")
         p.write_text(repr(node) + "\n")
 
 
@@ -314,43 +316,35 @@ class Node:
 
     @property
     def hash(self) -> int:
-        return getattr(self, "_hash", id(self))
+        return self._hash
+
+    @property
+    def key(self) -> str:
+        """Unique identifier combining function name and hash."""
+        return f"{self.fn.__name__}_{self._hash:x}"
 
     def __lt__(self, other: "Node") -> bool:
         return self.hash < other.hash
-
-    @property
-    def var(self) -> str:
-        hex_str = f"{self._hash:032x}"
-        return f"h_{hex_str[:6]}"
-
-    @property
-    def cache_key(self) -> str:
-        """Unique deterministic key used for caching."""
-        return f"{self.fn.__name__}:{self._hash:032x}"
 
     @functools.cached_property
     def lines(self) -> List[Tuple[int, str]]:
         """Return script lines for this node without trailing call."""
         with self._lock:
-            return self._compute_lines()
-
-    def _compute_lines(self) -> List[Tuple[int, str]]:
-        order = self.order
-        lines: List[Tuple[int, str]] = []
-        for node in order:
-            var_map = {d: d.var for d in node.deps}
-            ignore = getattr(node.fn, "_node_ignore", ())
-            call = _render_call(
-                node.fn,
-                node.args,
-                node.kwargs,
-                canonical=True,
-                mapping=var_map,
-                ignore=ignore,
-            )
-            lines.append((node._hash, f"{node.var} = {call}"))
-        return lines
+            order = self.order
+            lines: List[Tuple[int, str]] = []
+            for node in order:
+                var_map = {d: d.key for d in node.deps}
+                ignore = getattr(node.fn, "_node_ignore", ())
+                call = _render_call(
+                    node.fn,
+                    node.args,
+                    node.kwargs,
+                    canonical=True,
+                    mapping=var_map,
+                    ignore=ignore,
+                )
+                lines.append((node._hash, f"{node.key} = {call}"))
+            return lines
 
     @functools.cached_property
     def order(self) -> List["Node"]:
@@ -364,7 +358,7 @@ class Node:
         return self._require_flow().run(self)
 
     def delete_cache(self) -> None:
-        self._require_flow().engine.cache.delete(self.cache_key)
+        self._require_flow().engine.cache.delete(self.key)
 
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
@@ -466,7 +460,7 @@ class Engine:
     # ------------------------------------------------------------------
     def _resolve(self, v):
         if isinstance(v, Node):
-            hit, val = self.cache.get(v.cache_key)
+            hit, val = self.cache.get(v.key)
             return val if hit else None
         return v
 
@@ -474,7 +468,7 @@ class Engine:
         start = time.perf_counter()
         if self.on_node_start:
             self.on_node_start(n)
-        hit, val = self.cache.get(n.cache_key)
+        hit, val = self.cache.get(n.key)
         if hit:
             dur = time.perf_counter() - start
             if self.on_node_end:
@@ -484,7 +478,7 @@ class Engine:
         args = [self._resolve(a) for a in n.args]
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         val = n.fn(*args, **kwargs)
-        self.cache.put(n.cache_key, val)
+        self.cache.put(n.key, val)
         if self._can_save:
             self.cache.save_script(n)
         dur = time.perf_counter() - start
@@ -499,7 +493,7 @@ class Engine:
         self._exec_count = 0
 
         t0 = time.perf_counter()
-        hit, val = self.cache.get(root.cache_key)
+        hit, val = self.cache.get(root.key)
         if hit:
             if self.on_node_start:
                 self.on_node_start(root)
@@ -555,7 +549,7 @@ class Engine:
         self.on_node_end = orig_end
         if self.on_flow_end:
             self.on_flow_end(root, wall, self._exec_count)
-        return self.cache.get(root.cache_key)[1]
+        return self.cache.get(root.key)[1]
 
 
 # ----------------------------------------------------------------------

@@ -106,9 +106,9 @@ class _RichReporterCtx:
     def _on_start(self, n: Node):
         mem_hit = disk_hit = False
         if self.caches:
-            mem_hit, _ = self.caches[0].get(n.cache_key)
+            mem_hit, _ = self.caches[0].get(n.key)
         if not mem_hit and len(self.caches) > 1:
-            disk_hit, _ = self.caches[1].get(n.cache_key)
+            disk_hit, _ = self.caches[1].get(n.key)
         if mem_hit:
             self.status[n][0] = "Cached hit in Memory"
         elif disk_hit:

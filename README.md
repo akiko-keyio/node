@@ -54,13 +54,13 @@ print(result)  # 25
 ```python
 root = square(add(2, 3))
 print(repr(root))
-# h_xxxxx = add(x=2, y=3)
-# h_yyyyy = square(z=h_xxxxx)
+# add_89f9dde66a325c89ee8739040c6147ad = add(x=2, y=3)
+# square_7c3b8fad541e116101dc48cc17f9707b = square(z=add_89f9dde66a325c89ee8739040c6147ad)
 ```
 
 ## 缓存与并行
 
-`Flow` 默认使用 `MemoryLRU` 和 `DiskJoblib` 组合成 `ChainCache`。缓存键为 `"<func>:<digest>"` 格式的哈希值，磁盘缓存统一存放在 `<func>/h_<digest6>.pkl`，同时写入 `h_<digest6>.py` 保存脚本：
+`Flow` 默认使用 `MemoryLRU` 和 `DiskJoblib` 组合成 `ChainCache`。缓存键为 `"<func>_<digest>"` 格式的哈希值，磁盘缓存统一存放在 `<func>/<digest>.pkl`，同时写入 `<digest>.py` 保存脚本：
 
 ```python
 from node.node import Flow, ChainCache, MemoryLRU, DiskJoblib
@@ -75,8 +75,8 @@ flow = Flow(
 运行 `tutorial.py` 后将在缓存目录生成以下文件：
 
 ```
-.cache/inc/h_abcdef.pkl
-.cache/inc/h_abcdef.py
+.cache/inc/89f9dde66a325c89ee8739040c6147ad.pkl
+.cache/inc/89f9dde66a325c89ee8739040c6147ad.py
 ```
 
 ## 配置对象
