@@ -258,6 +258,17 @@ class Node:
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
 
+        child_hashes = tuple(d._hash for d in self.deps)
+        raw = (
+            self.fn.__qualname__,
+            _canonical_args(self),
+            child_hashes,
+        )
+        self._raw = raw
+        _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
+        self._hash = int(_hash, 16)
+        self._lock = threading.Lock()
+
         ancestors: set[Node] = set()
         for d in self.deps:
             if d is self:
@@ -270,33 +281,10 @@ class Node:
             raise ValueError("Cycle detected in DAG")
         self._ancestors = ancestors
 
-        child_hashes = tuple(d._hash for d in self.deps)
-        raw = (
-            self.fn.__qualname__,
-            _canonical_args(self),
-            child_hashes,
-        )
-        self._raw = raw
-        _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
-        self._hash = int(_hash, 16)
-        self._lock = threading.Lock()
-
     def _require_flow(self) -> "Flow":
         if self.flow is None:
             raise RuntimeError("Node has no associated Flow")
         return self.flow
-
-    def _detect_cycle(self):
-        stack = list(self.deps)
-        seen = set()
-        while stack:
-            n = stack.pop()
-            if n is self:
-                raise ValueError("Cycle detected in DAG")
-            if n in seen:
-                continue
-            seen.add(n)
-            stack.extend(n.deps)
 
     def __repr__(self):
         return self.signature
