@@ -63,11 +63,11 @@ _render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
 class _Lines:
     __slots__ = ("lines", "__weakref__")
 
-    def __init__(self, lines: List[Tuple[str, str]]):
+    def __init__(self, lines: List[Tuple[int, str]]):
         self.lines = lines
 
 
-_signature_cache: WeakValueDictionary[str, _Lines] = WeakValueDictionary()
+_signature_cache: WeakValueDictionary[int, _Lines] = WeakValueDictionary()
 
 
 def _canonical(obj: Any) -> str:
@@ -106,15 +106,15 @@ def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
         if k in ignore:
             continue
         if isinstance(v, Node):
-            parts.append((k, v._hash))
+            parts.append((k, f"{v._hash:032x}"))
         else:
             parts.append((k, _canonical(v)))
     return tuple(parts)
 
 
-def _merge_lines(nodes: Sequence["Node"]) -> List[Tuple[str, str]]:
-    merged: OrderedDict[str, str] = OrderedDict()
-    for n in sorted(nodes, key=lambda x: x._hash):
+def _merge_lines(nodes: Sequence["Node"]) -> List[Tuple[int, str]]:
+    merged: OrderedDict[int, str] = OrderedDict()
+    for n in sorted(nodes):
         for h, line in n.lines():
             merged.setdefault(h, line)
     return [(h, line) for h, line in merged.items()]
@@ -250,8 +250,8 @@ class Node:
         "__weakref__",
     )
 
-    _hash: str
-    _lines: List[Tuple[str, str]] | None
+    _hash: int
+    _lines: List[Tuple[int, str]] | None
     __signature: str | None
     _lock: threading.Lock
 
@@ -272,18 +272,18 @@ class Node:
             *(a for a in self.args if isinstance(a, Node)),
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
+
         self._detect_cycle()
 
         child_hashes = tuple(d._hash for d in self.deps)
-        code_hash = hashlib.blake2b(self.fn.__code__.co_code, digest_size=8).hexdigest()
         raw = (
             self.fn.__qualname__,
-            code_hash,
             _canonical_args(self),
             child_hashes,
         )
-        self._hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
-        self._lines: List[Tuple[str, str]] | None = None
+        _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
+        self._hash = int(_hash, 16)
+        self._lines: List[Tuple[int, str]] | None = None
         self.__signature: str | None = None
         self._lock = threading.Lock()
 
@@ -301,16 +301,32 @@ class Node:
     def __repr__(self):
         return self.signature
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Node):
+            return False
+        return hash(self) == hash(other)
+
+    def __hash__(self) -> int:
+        return self.hash
+
+    @property
+    def hash(self) -> int:
+        return getattr(self, "_hash", id(self))
+
+    def __lt__(self, other: "Node") -> bool:
+        return self.hash < other.hash
+
     @property
     def var(self) -> str:
-        return f"h_{self._hash[:6]}"
+        hex_str = f"{self._hash:032x}"
+        return f"h_{hex_str[:6]}"
 
     @property
     def cache_key(self) -> str:
         """Unique deterministic key used for caching."""
-        return f"{self.fn.__name__}:{self._hash}"
+        return f"{self.fn.__name__}:{self._hash:032x}"
 
-    def lines(self) -> List[Tuple[str, str]]:
+    def lines(self) -> List[Tuple[int, str]]:
         """Return script lines for this node without trailing call."""
         with self._lock:
             cached = self._lines
@@ -323,14 +339,14 @@ class Node:
 
         return self._compute_lines()
 
-    def _collect_lines(self) -> OrderedDict[str, str]:
-        merged: OrderedDict[str, str] = OrderedDict()
+    def _collect_lines(self) -> OrderedDict[int, str]:
+        merged: OrderedDict[int, str] = OrderedDict()
         for dep in self.deps:
             for h, line in dep.lines():
                 merged.setdefault(h, line)
         return merged
 
-    def _compute_lines(self) -> List[Tuple[str, str]]:
+    def _compute_lines(self) -> List[Tuple[int, str]]:
         merged = self._collect_lines()
         var_map = {d: d.var for d in self.deps}
         ignore = getattr(self.fn, "_node_ignore", ())
@@ -388,7 +404,7 @@ def _topo_order(root: Node):
         if n in seen:
             continue
         seen.add(n)
-        deps = sorted(n.deps, key=lambda x: getattr(x, "_hash", ""))
+        deps = sorted(n.deps)
         edges[n] = deps
         stack.extend(deps)
     return list(TopologicalSorter(edges).static_order())
@@ -589,7 +605,7 @@ class Flow:
     ):
         self.config = config or Config()
         self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
-        self._registry: WeakValueDictionary[str, Node] = WeakValueDictionary()
+        self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
         self.log = log
         if reporter is _Sentinel.MISS:
             try:  # defer import to avoid cycle
@@ -619,10 +635,10 @@ class Flow:
                 bound.apply_defaults()
 
                 node = Node(fn, bound.args, bound.kwargs, flow=self)
-                cached = self._registry.get(node._hash)
+                cached = self._registry.get(node)
                 if cached is not None:
                     return cached
-                self._registry[node._hash] = node
+                self._registry[node] = node
                 return node
 
             wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
