@@ -9,7 +9,7 @@ import os
 import threading
 import time
 import warnings
-from collections import deque, OrderedDict
+from collections import deque
 from collections.abc import Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -94,14 +94,6 @@ def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
         else:
             parts.append((k, _canonical(v)))
     return tuple(parts)
-
-
-def _merge_lines(nodes: Sequence["Node"]) -> List[Tuple[int, str]]:
-    merged: OrderedDict[int, str] = OrderedDict()
-    for n in sorted(nodes):
-        for h, line in n.lines:
-            merged.setdefault(h, line)
-    return [(h, line) for h, line in merged.items()]
 
 
 # ----------------------------------------------------------------------
@@ -301,10 +293,6 @@ class Node:
         return True
 
     def __hash__(self) -> int:
-        return self.hash
-
-    @property
-    def hash(self) -> int:
         return self._hash
 
     @property
@@ -313,7 +301,7 @@ class Node:
         return f"{self.fn.__name__}_{self._hash:x}"
 
     def __lt__(self, other: "Node") -> bool:
-        return self.hash < other.hash
+        return self._hash < other._hash
 
     @functools.cached_property
     def lines(self) -> List[Tuple[int, str]]:
@@ -429,7 +417,6 @@ class Engine:
         *,
         executor: str = "thread",
         workers: int | None = None,
-        log: bool = True,
         on_node_start: Callable[[Node], None] | None = None,
         on_node_end: Callable[[Node, float, bool], None] | None = None,
         on_flow_end: Callable[[Node, float, int], None] | None = None,
@@ -437,7 +424,6 @@ class Engine:
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
         self.executor = executor
         self.workers = workers or (os.cpu_count() or 4)
-        self.log = log
         self.on_node_start = on_node_start
         self.on_node_end = on_node_end
         self.on_flow_end = on_flow_end
@@ -560,13 +546,11 @@ class Flow:
         cache: Cache | None = None,
         executor: str = "thread",
         workers: int | None = None,
-        log: bool = True,
         reporter: Optional[Any] = None,
     ):
         self.config = config or Config()
-        self.engine = Engine(cache=cache, executor=executor, workers=workers, log=log)
+        self.engine = Engine(cache=cache, executor=executor, workers=workers)
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
-        self.log = log
         if reporter is None:
             try:  # defer import to avoid cycle
                 from .reporters import RichReporter as _RR
