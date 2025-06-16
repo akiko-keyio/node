@@ -113,7 +113,7 @@ class _RichReporterCtx:
                     self.status[n][0] = "Skipped"
                     self.status[n][2] = 0.0
                     self.progress.advance(self.bar)
-            self.live.update(self.render())
+        self.live.update(self.render(final=True))
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
@@ -179,25 +179,29 @@ class _RichReporterCtx:
         return Text(f"{icon} {self.labels[n]}{extra}", style=style)
 
     # --------------------------------------------------------------
-    def render(self) -> Group:
+    def _window_nodes(self) -> List[Node]:
+        nodes = self.nodes
+        if not self.truncate:
+            return nodes
+        idx = {n: i for i, n in enumerate(nodes)}
+        running_idx = [idx[n] for n in nodes if self.status[n][0] == "Executing"]
+        if running_idx:
+            start = max(0, min(running_idx) - 5)
+            end = min(len(nodes), max(running_idx) + 6)
+        elif self.last_done:
+            pos = idx[self.last_done]
+            start = max(0, pos - 5)
+            end = min(len(nodes), pos + 6)
+        else:
+            start = 0
+            end = self.window
+        return nodes[start:end]
+
+    def render(self, final: bool = False) -> Group:
         frame = self.spinner.render(time.perf_counter())
         rows = [self.progress.get_renderable()]
 
-        nodes = self.nodes
-        if self.truncate:
-            idx = {n: i for i, n in enumerate(nodes)}
-            running_idx = [idx[n] for n in nodes if self.status[n][0] == "Executing"]
-            if running_idx:
-                start = max(0, min(running_idx) - 5)
-                end = min(len(nodes), max(running_idx) + 1 + 5)
-            elif self.last_done:
-                pos = idx[self.last_done]
-                start = max(0, pos - 5)
-                end = min(len(nodes), pos + 1 + 5)
-            else:
-                start = 0
-                end = self.window
-            nodes = nodes[start:end]
+        nodes = self.nodes if final else self._window_nodes()
 
         rows.extend(self._format_line(n, frame) for n in nodes)
         return Group(*rows)
