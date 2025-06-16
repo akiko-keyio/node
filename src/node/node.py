@@ -55,19 +55,8 @@ MISS = _Sentinel.MISS
 # global caches & locks
 _can_lock = threading.Lock()
 _ren_lock = threading.Lock()
-_sig_lock = threading.Lock()
 _canonical_cache: LRUCache[tuple[int, str], str] = LRUCache(maxsize=4096)
 _render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
-
-
-class _Lines:
-    __slots__ = ("lines", "__weakref__")
-
-    def __init__(self, lines: List[Tuple[int, str]]):
-        self.lines = lines
-
-
-_signature_cache: WeakValueDictionary[int, _Lines] = WeakValueDictionary()
 
 
 def _canonical(obj: Any) -> str:
@@ -115,7 +104,7 @@ def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
 def _merge_lines(nodes: Sequence["Node"]) -> List[Tuple[int, str]]:
     merged: OrderedDict[int, str] = OrderedDict()
     for n in sorted(nodes):
-        for h, line in n.lines():
+        for h, line in n.lines:
             merged.setdefault(h, line)
     return [(h, line) for h, line in merged.items()]
 
@@ -244,15 +233,12 @@ class Node:
         "deps",
         "flow",
         "_hash",
-        "_lines",
-        "__signature",
         "_lock",
+        "__dict__",
         "__weakref__",
     )
 
     _hash: int
-    _lines: List[Tuple[int, str]] | None
-    __signature: str | None
     _lock: threading.Lock
 
     def __init__(
@@ -283,8 +269,6 @@ class Node:
         )
         _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
         self._hash = int(_hash, 16)
-        self._lines: List[Tuple[int, str]] | None = None
-        self.__signature: str | None = None
         self._lock = threading.Lock()
 
     def _require_flow(self) -> "Flow":
@@ -326,28 +310,14 @@ class Node:
         """Unique deterministic key used for caching."""
         return f"{self.fn.__name__}:{self._hash:032x}"
 
+    @functools.cached_property
     def lines(self) -> List[Tuple[int, str]]:
         """Return script lines for this node without trailing call."""
         with self._lock:
-            cached = self._lines
-            if cached is not None:
-                return cached
-            holder = _signature_cache.get(self._hash)
-            if holder is not None:
-                self._lines = holder.lines
-                return holder.lines
-
-        return self._compute_lines()
-
-    def _collect_lines(self) -> OrderedDict[int, str]:
-        merged: OrderedDict[int, str] = OrderedDict()
-        for dep in self.deps:
-            for h, line in dep.lines():
-                merged.setdefault(h, line)
-        return merged
+            return self._compute_lines()
 
     def _compute_lines(self) -> List[Tuple[int, str]]:
-        merged = self._collect_lines()
+        lines = _merge_lines(self.deps)
         var_map = {d: d.var for d in self.deps}
         ignore = getattr(self.fn, "_node_ignore", ())
         call = _render_call(
@@ -358,30 +328,12 @@ class Node:
             mapping=var_map,
             ignore=ignore,
         )
-        merged[self._hash] = f"{self.var} = {call}"
-        lines = [(h, line) for h, line in merged.items()]
-        holder = _Lines(lines)
-        with _sig_lock:
-            _signature_cache[self._hash] = holder
-        with self._lock:
-            self._lines = lines
+        lines.append((self._hash, f"{self.var} = {call}"))
         return lines
 
-    def _compute_signature(self) -> str:
-        with self._lock:
-            if self.__signature is not None:
-                return self.__signature
-
-        lines = [line for _, line in self.lines()]
-        result = "\n".join(lines)
-
-        with self._lock:
-            self.__signature = result
-        return result
-
-    @property
+    @functools.cached_property
     def signature(self) -> str:
-        return self._compute_signature()
+        return "\n".join(line for _, line in self.lines)
 
     def get(self):
         return self._require_flow().run(self)
@@ -674,5 +626,3 @@ class Flow:
             _canonical_cache.clear()
         with _ren_lock:
             _render_cache.clear()
-        with _sig_lock:
-            _signature_cache.clear()
