@@ -258,6 +258,9 @@ class Node:
             *(v for v in self.kwargs.values() if isinstance(v, Node)),
         ]
 
+        if any(d is self for d in self.deps):
+            raise ValueError("Cycle detected in DAG")
+
         child_hashes = tuple(d._hash for d in self.deps)
         raw = (
             self.fn.__qualname__,
@@ -271,8 +274,6 @@ class Node:
 
         ancestors: set[Node] = set()
         for d in self.deps:
-            if d is self:
-                raise ValueError("Cycle detected in DAG")
             anc = getattr(d, "_ancestors", None)
             if anc:
                 ancestors.update(anc)
