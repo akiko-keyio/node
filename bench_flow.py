@@ -7,7 +7,7 @@ from src.node import Flow, Config
 
 
 def build_flow() -> Tuple[Any, Any]:
-    """Build a 200x200 node grid DAG."""
+    """Build a 400x400 node grid DAG."""
 
     flow = Flow(config=Config(), executor="thread", workers=8)
 
@@ -16,7 +16,7 @@ def build_flow() -> Tuple[Any, Any]:
         return a * b
 
     t0 = time.perf_counter()
-    N = 200
+    N = 400
     print("Starting building flow")
     grid: list[list[Any]] = [[None] * N for _ in range(N)]
     for i in range(N):

@@ -83,7 +83,11 @@ def _canonical(obj: Any) -> str:
 
 
 def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
-    bound = inspect.signature(node.fn).bind_partial(*node.args, **node.kwargs)
+    sig = getattr(node.fn, "_node_sig", None)
+    if sig is None:
+        sig = inspect.signature(node.fn)
+        setattr(node.fn, "_node_sig", sig)
+    bound = sig.bind_partial(*node.args, **node.kwargs)
     ignore = set(getattr(node.fn, "_node_ignore", ()))
     parts = []
     for k, v in bound.arguments.items():
@@ -574,6 +578,7 @@ class Flow:
         def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
             setattr(fn, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
             sig_obj = inspect.signature(fn)
+            setattr(fn, "_node_sig", sig_obj)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
