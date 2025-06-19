@@ -64,8 +64,11 @@ class _RichReporterCtx:
         self._stop.set()
         self.t.join()
         self._drain()
-        self.live.update(self._render(final=True))
+        final_render = self._render(final=True)
+        self.live.update(final_render)
         self.live.__exit__(exc_type, exc, tb)
+        # Explicitly print the summary to handle Jupyter notebooks
+        self.live.console.print(final_render)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
         self.engine.on_flow_end = self.orig_flow
@@ -144,14 +147,12 @@ class _RichReporterCtx:
         avg = (self.hit_time + exec_time) / done if done else 0.0
         eta = int(remain * avg)
         parts = [
-            ("⚡Cache hit: ", "black"),
-            (f"{int(self.hits)} [{self.hit_time:.2f}s]    ", ""),
-            ("✨New: ", "black"),
-            (f"{self.execs} [{exec_time:.1f}s]", ""),
+            f"⚡Cache hit: {int(self.hits)} [{self.hit_time:.2f}s]    ",
+            f"✨New: {self.execs} [{exec_time:.1f}s]",
         ]
         if not final:
-            parts += [("    \u231bRemain: ", "black"), (f"{remain} [ETA: {eta} s]", "")]
-        return Text.assemble(*parts)
+            parts.append(f"    \u231bRemain: {remain} [ETA: {eta} s]")
+        return Text("".join(parts))
 
     def _render(self, final: bool = False) -> Group:
         out = [self._header(final)]
@@ -162,6 +163,5 @@ class _RichReporterCtx:
         if final and self.root_info:
             label, dur, cached = self.root_info
             sym = "⚡" if cached else "✔"
-            color = "cyan" if cached else "green"
-            out.append(Text(f"{sym} {label} [{dur:.2f}s]", style=color))
+            out.append(Text(f"{sym} {label} [{dur:.2f}s]"))
         return Group(*out)
