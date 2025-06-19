@@ -264,7 +264,7 @@ class Node:
             child_hashes,
         )
         self._raw = raw
-        _hash = hashlib.blake2b(repr(raw).encode(), digest_size=16).hexdigest()
+        _hash = hashlib.blake2b(repr(raw).encode(), digest_size=6).hexdigest()
         self._hash = int(_hash, 16)
         self._lock = threading.Lock()
 
