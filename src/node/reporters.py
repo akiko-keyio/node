@@ -147,14 +147,19 @@ class _RichReporterCtx:
         remain = self.total - done - len(self.running)
         avg = (exec_time) / self.execs if self.execs else 0.0
         eta = int(remain * avg)
-        parts = [
-            ("⚡ Cache ", "bold"),
-            (f"{self.hits} "),
-            (f"[{self.hit_time:.1f}s]", "gray50"),
-            ("\t⭐ Create ", "bold"),
-            (f"{int(self.execs)} "),
-            (f"[{exec_time:.1f}s]", "gray50"),
-        ]
+        parts = []
+        if self.hits:
+            parts += [
+                ("⚡ Cache ", "bold"),
+                (f"{self.hits} "),
+                (f"[{self.hit_time:.1f}s]", "gray50"),
+            ]
+        if self.execs:
+            parts += [
+                ("\t⭐ Create ", "bold"),
+                (f"{int(self.execs)} "),
+                (f"[{exec_time:.1f}s]", "gray50"),
+            ]
         if not final:
             parts += [
                 ("\t📋 Queue ", "bold"),
