@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, TYPE_CHECKING
 import time
+import sys
 import threading
 from queue import SimpleQueue, Empty
 
@@ -67,8 +68,8 @@ class _RichReporterCtx:
         final_render = self._render(final=True)
         self.live.update(final_render)
         self.live.__exit__(exc_type, exc, tb)
-        # Explicitly print the summary to handle Jupyter notebooks
-        self.live.console.print(final_render)
+        if "ipykernel" in sys.modules:
+            self.live.console.print(final_render)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
         self.engine.on_flow_end = self.orig_flow
@@ -147,7 +148,6 @@ class _RichReporterCtx:
         avg = (exec_time) / self.execs if self.execs else 0.0
         eta = int(remain * avg)
         parts = [
-
             ("⚡ Cache ", "bold"),
             (f"{self.hits} "),
             (f"[{self.hit_time:.1f}s]", "gray50"),
@@ -162,7 +162,6 @@ class _RichReporterCtx:
                 (f"[ETA: {eta}s]", "gray50"),
             ]
         return Text.assemble(*parts)
-
 
     def _render(self, final: bool = False) -> Group:
         out = [self._header(final)]
