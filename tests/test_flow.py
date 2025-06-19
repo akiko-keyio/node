@@ -6,6 +6,7 @@ import yaml  # type: ignore[import]
 import pytest
 import joblib  # type: ignore[import]
 from node.node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
+from node.reporters import SmartReporter
 
 
 def test_flow_example(flow_factory):
@@ -500,3 +501,15 @@ def test_deep_chain_signature(flow_factory):
         node = inc(node)
 
     assert flow.run(node) == 201
+
+
+def test_smart_reporter_runs(flow_factory):
+    flow = flow_factory()
+
+    @flow.node()
+    def add(x, y):
+        return x + y
+
+    rep = SmartReporter(refresh=10)
+    node = add(1, 2)
+    assert flow.run(node, reporter=rep) == 3

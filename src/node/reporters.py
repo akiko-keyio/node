@@ -1,7 +1,7 @@
 from __future__ import annotations
 # coverage: ignore-file
 
-from typing import Dict, List, TYPE_CHECKING
+from typing import Dict, Deque, List, TYPE_CHECKING
 import time
 import threading
 
@@ -16,13 +16,18 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.layout import Layout  # type: ignore[import]
+from rich.panel import Panel  # type: ignore[import]
+from rich.table import Table  # type: ignore[import]
+from queue import SimpleQueue, Empty
+from collections import deque
 
 from .node import Node, ChainCache, _topo_order
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
 
-__all__ = ["RichReporter"]
+__all__ = ["RichReporter", "SmartReporter"]
 
 
 class RichReporter:
@@ -205,3 +210,179 @@ class _RichReporterCtx:
 
         rows.extend(self._format_line(n, frame) for n in nodes)
         return Group(*rows)
+
+
+class SmartReporter:
+    """Concurrent-safe reporter with compact UI."""
+
+    def __init__(self, refresh: int = 20, window: int = 20) -> None:
+        self.refresh = refresh
+        self.window = window
+
+    def attach(self, engine: "Engine", root: Node):
+        return _SmartCtx(self, engine, root)
+
+
+class _SmartCtx:
+    def __init__(self, cfg: SmartReporter, engine, root: Node) -> None:
+        self.cfg = cfg
+        self.engine = engine
+        self.root = root
+        self.q: SimpleQueue = SimpleQueue()
+        self.running: Dict[str, float] = {}
+        self.done: Deque[tuple[str, float, bool]] = deque(maxlen=cfg.window)
+        self.executed: List[tuple[str, float]] = []
+        self.stats = {
+            "total": len(root.order),
+            "hits": 0,
+            "hit_time": 0.0,
+            "exec": 0,
+            "exec_time": 0.0,
+        }
+
+    # ------------------------------------------------------------------
+    def __enter__(self):
+        self.orig_start = self.engine.on_node_start
+        self.orig_end = self.engine.on_node_end
+        self.engine.on_node_start = self._start
+        self.engine.on_node_end = self._end
+        self.progress = Progress(
+            BarColumn(bar_width=None),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            transient=False,
+            refresh_per_second=self.cfg.refresh,
+        )
+        self.bar = self.progress.add_task("flow", total=self.stats["total"])
+        self.live = Live(self._render(), refresh_per_second=self.cfg.refresh)
+        self.live.__enter__()
+        self._stop = threading.Event()
+        self.t = threading.Thread(target=self._ui_loop, daemon=True)
+        self.t.start()
+        return self
+
+    # ------------------------------------------------------------------
+    def __exit__(self, exc_type, exc, tb):
+        self._stop.set()
+        self.t.join()
+        self.live.__exit__(exc_type, exc, tb)
+        self.engine.on_node_start = self.orig_start
+        self.engine.on_node_end = self.orig_end
+
+    # ------------------------------------------------------------------
+    def _start(self, n: Node) -> None:
+        hit, _ = self.engine.cache.get(n.key)
+        self.q.put(("start", n.key, time.perf_counter(), hit))
+        if self.orig_start:
+            self.orig_start(n)
+
+    def _end(self, n: Node, dur: float, cached: bool) -> None:
+        self.q.put(("end", n.key, dur, cached))
+        if self.orig_end:
+            self.orig_end(n, dur, cached)
+
+    # ------------------------------------------------------------------
+    def _ui_loop(self) -> None:
+        sleep = 1.0 / self.cfg.refresh
+        while not self._stop.is_set():
+            self._drain_queue()
+            self.live.update(self._render())
+            time.sleep(sleep)
+        self._drain_queue()
+        self.live.update(self._render(final=True))
+
+    def _drain_queue(self) -> None:
+        while True:
+            try:
+                event = self.q.get_nowait()
+            except Empty:
+                break
+            if event[0] == "start":
+                _, k, ts, hit = event
+                if not hit:
+                    self.running[k] = ts
+            else:
+                _, k, dur, cached = event
+                self.running.pop(k, None)
+                self.done.appendleft((k, dur, cached))
+                if cached:
+                    self.stats["hits"] += 1
+                    self.stats["hit_time"] += dur
+                else:
+                    self.stats["exec"] += 1
+                    self.stats["exec_time"] += dur
+                    self.executed.append((k, dur))
+                self.progress.advance(self.bar)
+
+    # ------------------------------------------------------------------
+    def _render(self, final: bool = False):
+        if final:
+            layout = Layout()
+            layout.split(
+                Layout(self._make_header(True), name="header", size=1),
+                Layout(self._table_executed(), name="exec"),
+            )
+            return layout
+        layout = Layout()
+        layout.split(
+            Layout(self._make_header(), name="header", size=1),
+            Layout(self.progress, name="prog", size=3),
+            Layout(name="body"),
+        )
+        body = Layout()
+        body.split_row(
+            Layout(self._table_running(), name="running"),
+            Layout(self._table_recent(), name="recent"),
+        )
+        layout["body"].update(body)
+        return layout
+
+    def _make_header(self, final: bool = False):
+        s = self.stats
+        done = s["hits"] + s["exec"]
+        remain = s["total"] - done - len(self.running)
+        avg = (s["hit_time"] + s["exec_time"]) / done if done else 0.0
+        eta = remain * avg
+        parts = [
+            ("⚡Cache hit: ", "cyan"),
+            (f"{s['hits']} [{s['hit_time']:.2f}s]    ", ""),
+            ("✨New: ", "green"),
+            (f"{s['exec']} [{s['exec_time']:.1f}s]", ""),
+        ]
+        if not final:
+            parts.extend(
+                [
+                    ("    ✔Remain: ", "yellow"),
+                    (f"{remain} [ETA: {int(eta)} s]", ""),
+                ]
+            )
+        text = Text.assemble(*parts)
+        return text
+
+    def _table_running(self):
+        tab = Table(title=f"Running ({len(self.running)})", box=None, expand=True)
+        tab.add_column("Node", overflow="fold")
+        tab.add_column("Elapsed")
+        now = time.perf_counter()
+        for k, ts in list(self.running.items())[: self.cfg.window]:
+            tab.add_row(k, f"{now - ts:.2f}s")
+        return Panel(tab)
+
+    def _table_recent(self):
+        tab = Table(title="Recent", box=None, expand=True)
+        tab.add_column("Node", overflow="fold")
+        tab.add_column("Dur")
+        tab.add_column("Type")
+        for k, dur, cached in self.done:
+            style = "cyan" if cached else "green"
+            typ = "cached" if cached else "done"
+            tab.add_row(Text(k, style=style), f"{dur:.2f}s", typ)
+        return Panel(tab)
+
+    def _table_executed(self):
+        tab = Table(title="Executed", box=None, expand=True)
+        tab.add_column("Node", overflow="fold")
+        tab.add_column("Dur")
+        for k, dur in self.executed:
+            tab.add_row(k, f"{dur:.2f}s")
+        return Panel(tab)
