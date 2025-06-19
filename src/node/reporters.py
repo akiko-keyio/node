@@ -36,7 +36,8 @@ class _RichReporterCtx:
         self.root = root
         self.q: SimpleQueue = SimpleQueue()
         self.running: Dict[str, tuple[str, float]] = {}
-        self.hits = self.hit_time = 0.0
+        self.hits = 0
+        self.hit_time = 0.0
         self.execs = 0
         self.exec_start: float | None = None
         self.exec_end: float | None = None
@@ -62,6 +63,7 @@ class _RichReporterCtx:
     def __exit__(self, exc_type, exc, tb):
         self._stop.set()
         self.t.join()
+        self._drain()
         self.live.update(self._render(final=True))
         self.live.__exit__(exc_type, exc, tb)
         self.engine.on_node_start = self.orig_start
@@ -118,8 +120,14 @@ class _RichReporterCtx:
                         self.exec_end = end
                 if k == self.root.key:
                     self.root_info = (label, dur, cached)
-            else:
-                self.exec_end = self.exec_end or self.exec_start
+            elif typ == "flow":
+                wall = rest[0]
+                if self.exec_start is None:
+                    now = time.perf_counter()
+                    self.exec_start = now - wall
+                    self.exec_end = now
+                elif self.exec_end is None:
+                    self.exec_end = self.exec_start + wall
 
     # --------------------------------------------------------------
     def _header(self, final: bool) -> Text:
@@ -136,13 +144,13 @@ class _RichReporterCtx:
         avg = (self.hit_time + exec_time) / done if done else 0.0
         eta = int(remain * avg)
         parts = [
-            ("⚡Cache hit: ", "cyan"),
+            ("⚡Cache hit: ", "black"),
             (f"{int(self.hits)} [{self.hit_time:.2f}s]    ", ""),
-            ("✨New: ", "green"),
+            ("✨New: ", "black"),
             (f"{self.execs} [{exec_time:.1f}s]", ""),
         ]
         if not final:
-            parts += [("    ✔Remain: ", "yellow"), (f"{remain} [ETA: {eta} s]", "")]
+            parts += [("    \u231bRemain: ", "black"), (f"{remain} [ETA: {eta} s]", "")]
         return Text.assemble(*parts)
 
     def _render(self, final: bool = False) -> Group:
