@@ -23,8 +23,19 @@ __all__ = ["RichReporter"]
 class RichReporter:
     """Display execution status using ``rich`` in real time."""
 
-    def __init__(self, refresh_per_second: int = 20):
+    def __init__(self, refresh_per_second: int = 20, show_script_line: bool = True):
+        """Create reporter.
+
+        Parameters
+        ----------
+        refresh_per_second:
+            UI refresh rate.
+        show_script_line:
+            Display canonical script line instead of ``_render_call``.
+        """
+
         self.refresh_per_second = refresh_per_second
+        self.show_script_line = show_script_line
 
     def attach(self, engine: "Engine", root: Node):
         return _RichReporterCtx(self, engine, root)
@@ -76,7 +87,10 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
-        call = _render_call(n.fn, n.args, n.kwargs)
+        if self.cfg.show_script_line:
+            call = n.lines[-1][-1]
+        else:
+            call = _render_call(n.fn, n.args, n.kwargs)
         self.q.put(("start", n.key, call, time.perf_counter()))
         if self.orig_start:
             self.orig_start(n)
