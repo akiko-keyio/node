@@ -231,7 +231,14 @@ class _SmartCtx:
         self.q: SimpleQueue = SimpleQueue()
         self.running: Dict[str, float] = {}
         self.done: Deque[tuple[str, float, bool]] = deque(maxlen=cfg.window)
-        self.stats = {"total": len(root.order), "done": 0, "cached": 0, "failed": 0}
+        self.executed: List[tuple[str, float]] = []
+        self.stats = {
+            "total": len(root.order),
+            "hits": 0,
+            "hit_time": 0.0,
+            "exec": 0,
+            "exec_time": 0.0,
+        }
 
     # ------------------------------------------------------------------
     def __enter__(self):
@@ -282,7 +289,7 @@ class _SmartCtx:
             self.live.update(self._render())
             time.sleep(sleep)
         self._drain_queue()
-        self.live.update(self._render())
+        self.live.update(self._render(final=True))
 
     def _drain_queue(self) -> None:
         while True:
@@ -292,21 +299,30 @@ class _SmartCtx:
                 break
             if event[0] == "start":
                 _, k, ts, hit = event
-                if hit:
-                    self.stats["cached"] += 1
-                    self.stats["done"] += 1
-                    self.progress.advance(self.bar)
-                else:
+                if not hit:
                     self.running[k] = ts
             else:
                 _, k, dur, cached = event
                 self.running.pop(k, None)
                 self.done.appendleft((k, dur, cached))
-                self.stats["done"] += 1
+                if cached:
+                    self.stats["hits"] += 1
+                    self.stats["hit_time"] += dur
+                else:
+                    self.stats["exec"] += 1
+                    self.stats["exec_time"] += dur
+                    self.executed.append((k, dur))
                 self.progress.advance(self.bar)
 
     # ------------------------------------------------------------------
-    def _render(self):
+    def _render(self, final: bool = False):
+        if final:
+            layout = Layout()
+            layout.split(
+                Layout(self._make_header(True), name="header", size=1),
+                Layout(self._table_executed(), name="exec"),
+            )
+            return layout
         layout = Layout()
         layout.split(
             Layout(self._make_header(), name="header", size=1),
@@ -321,14 +337,27 @@ class _SmartCtx:
         layout["body"].update(body)
         return layout
 
-    def _make_header(self):
+    def _make_header(self, final: bool = False):
         s = self.stats
-        return Text.assemble(
-            ("✔ ", "green"),
-            (f"{s['done']}/{s['total']} "),
-            ("⚡ ", "cyan"),
-            (str(s["cached"]),),
-        )
+        done = s["hits"] + s["exec"]
+        remain = s["total"] - done - len(self.running)
+        avg = (s["hit_time"] + s["exec_time"]) / done if done else 0.0
+        eta = remain * avg
+        parts = [
+            ("⚡Cache hit: ", "cyan"),
+            (f"{s['hits']} [{s['hit_time']:.2f}s]    ", ""),
+            ("✨New: ", "green"),
+            (f"{s['exec']} [{s['exec_time']:.1f}s]", ""),
+        ]
+        if not final:
+            parts.extend(
+                [
+                    ("    ✔Remain: ", "yellow"),
+                    (f"{remain} [ETA: {int(eta)} s]", ""),
+                ]
+            )
+        text = Text.assemble(*parts)
+        return text
 
     def _table_running(self):
         tab = Table(title=f"Running ({len(self.running)})", box=None, expand=True)
@@ -348,4 +377,12 @@ class _SmartCtx:
             style = "cyan" if cached else "green"
             typ = "cached" if cached else "done"
             tab.add_row(Text(k, style=style), f"{dur:.2f}s", typ)
+        return Panel(tab)
+
+    def _table_executed(self):
+        tab = Table(title="Executed", box=None, expand=True)
+        tab.add_column("Node", overflow="fold")
+        tab.add_column("Dur")
+        for k, dur in self.executed:
+            tab.add_row(k, f"{dur:.2f}s")
         return Panel(tab)
