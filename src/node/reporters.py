@@ -56,6 +56,23 @@ class _RichReporterCtx:
         self.root_info: tuple[str, float, bool] | None = None
         self.spinner = Spinner("dots")
 
+    @staticmethod
+    def _format_dur(seconds: float) -> str:
+        """Return duration string with hours and minutes."""
+        if seconds >= 3600:
+            h = int(seconds // 3600)
+            m = int((seconds % 3600) // 60)
+            s = int(seconds % 60)
+            parts = [f"{h}h", f"{m}m"]
+            if s:
+                parts.append(f"{s}s")
+            return " ".join(parts)
+        if seconds >= 60:
+            m = int(seconds // 60)
+            s = int(seconds % 60)
+            return f"{m}m {s}s" if s else f"{m}m"
+        return f"{seconds:.1f}s"
+
     # --------------------------------------------------------------
     def __enter__(self):
         self.orig_start = self.engine.on_node_start
@@ -65,7 +82,11 @@ class _RichReporterCtx:
         self.engine.on_node_end = self._end
         self.engine.on_flow_end = self._flow
         self.total = len(self.root.order)
-        self.live = Live(self._render(), refresh_per_second=self.cfg.refresh_per_second)
+        self.live = Live(
+            self._render(),
+            refresh_per_second=self.cfg.refresh_per_second,
+            transient=True,
+        )
         self.live.__enter__()
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._loop, daemon=True)
@@ -161,24 +182,27 @@ class _RichReporterCtx:
         remain = self.total - done - len(self.running)
         avg = (exec_time) / self.execs if self.execs else 0.0
         eta = int(remain * avg)
+        fmt = self._format_dur
         parts = []
         if self.hits:
             parts += [
                 ("⚡ Cache ", "bold"),
                 (f"{self.hits} "),
-                (f"[{self.hit_time:.1f}s]", "gray50"),
+                (f"[{fmt(self.hit_time)}]", "gray50"),
             ]
         if self.execs:
+            prefix = "\t" if parts else ""
             parts += [
-                ("\t⭐ Create ", "bold"),
+                (f"{prefix}⭐ Create ", "bold"),
                 (f"{int(self.execs)} "),
-                (f"[{exec_time:.1f}s]", "gray50"),
+                (f"[{fmt(exec_time)}]", "gray50"),
             ]
         if not final:
+            prefix = "\t" if parts else ""
             parts += [
-                ("\t📋 Queue ", "bold"),
+                (f"{prefix}📋 Queue ", "bold"),
                 (f"{remain} "),
-                (f"[ETA: {eta}s]", "gray50"),
+                (f"[ETA: {fmt(eta)}]", "gray50"),
             ]
         return Text.assemble(*parts)
 
@@ -187,5 +211,6 @@ class _RichReporterCtx:
         now = time.perf_counter()
         icon = str(self.spinner.render(now))
         for label, ts in list(self.running.values()):
-            out.append(Text(f"{icon} {label} [{now - ts:.1f}s]"))
+            dur = self._format_dur(now - ts)
+            out.append(Text.assemble(f"{icon} {label} ", (f"[{dur}]", "gray50")))
         return Group(*out)

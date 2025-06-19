@@ -29,3 +29,10 @@ def test_header_omits_create_when_zero():
     header = ctx._header(final=False).plain
     assert "⭐ Create" not in header
     assert "⚡ Cache" in header
+
+
+def test_format_duration():
+    ctx = _make_ctx()
+    assert ctx._format_dur(5) == "5.0s"
+    assert ctx._format_dur(65) == "1m 5s"
+    assert ctx._format_dur(3661) == "1h 1m 1s"
