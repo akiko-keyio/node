@@ -141,16 +141,22 @@ class _RichReporterCtx:
             exec_time = end - self.exec_start
         done = self.hits + self.execs
         remain = self.total - done - len(self.running)
-        avg = (self.hit_time + exec_time) / done if done else 0.0
+        avg = (exec_time) / self.execs if self.execs else 0.0
         eta = int(remain * avg)
         parts = [
-            ("⚡Cache hit: ", "black"),
-            (f"{int(self.hits)} [{self.hit_time:.2f}s]    ", ""),
-            ("✨New: ", "black"),
-            (f"{self.execs} [{exec_time:.1f}s]", ""),
+            ("⚡ Cache ", "bold"),
+            (f"{self.hits} "),
+            (f"[{self.hit_time:.1f}s]", "gray50"),
+            ("\t⭐ Create ", "bold"),
+            (f"{int(self.execs)} "),
+            (f"[{exec_time:.1f}s]", "gray50"),
         ]
         if not final:
-            parts += [("    \u231bRemain: ", "black"), (f"{remain} [ETA: {eta} s]", "")]
+            parts += [
+                ("\t📋 Queue ", "bold"),
+                (f"{remain} "),
+                (f"[ETA: {eta}s]", "gray50"),
+            ]
         return Text.assemble(*parts)
 
     def _render(self, final: bool = False) -> Group:
@@ -159,9 +165,4 @@ class _RichReporterCtx:
         icon = str(self.spinner.render(now))
         for label, ts in list(self.running.values()):
             out.append(Text(f"{icon} {label} [{now - ts:.1f}s]"))
-        if final and self.root_info:
-            label, dur, cached = self.root_info
-            sym = "⚡" if cached else "✔"
-            color = "cyan" if cached else "green"
-            out.append(Text(f"{sym} {label} [{dur:.2f}s]", style=color))
         return Group(*out)
