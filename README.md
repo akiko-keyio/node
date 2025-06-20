@@ -10,6 +10,7 @@ Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型�
 - **脚本表示**：任意节点的 `repr()` 都会生成等效的 Python 调用脚本。
 - **配置系统**：通过 `Config` 对象集中管理任务默认参数，支持从 YAML 加载。
 - **回调钩子**：`on_node_end` 与 `on_flow_end` 可用来收集统计信息。
+- **日志模块**：`from node import logger` 即可获得预配置的 `loguru` 记录器。
 
 ## 安装
 
