@@ -340,11 +340,19 @@ class Node:
         return self._require_flow().run(self)
 
     def delete_cache(self) -> None:
-        self._require_flow().engine.cache.delete(self.key)
+        self.delete()
 
     def generate(self) -> None:
         """Compute and cache this node without returning the value."""
         self._require_flow().generate(self)
+
+    def create(self):
+        """Recompute this node ignoring existing cache."""
+        return self._require_flow().create(self)
+
+    def delete(self) -> None:
+        """Delete cached value for this node."""
+        self._require_flow().delete(self)
 
 
 # ----------------------------------------------------------------------
@@ -660,6 +668,24 @@ class Flow:
     def generate(self, root: Node) -> None:
         """Compute and cache ``root`` without returning the value."""
         self.engine.run(root)
+        if isinstance(self.engine.cache, MemoryLRU):
+            for n in root.order:
+                self.engine.cache.delete(n.key)
+        elif isinstance(self.engine.cache, ChainCache):
+            for c in self.engine.cache.caches:
+                if isinstance(c, MemoryLRU):
+                    for n in root.order:
+                        c.delete(n.key)
+
+    def create(self, root: Node):
+        """Recompute ``root`` ignoring any existing cache."""
+        for n in root.order:
+            self.engine.cache.delete(n.key)
+        return self.run(root)
+
+    def delete(self, root: Node) -> None:
+        """Delete cache entry for ``root``."""
+        self.engine.cache.delete(root.key)
 
     def clear_caches(self) -> None:
         """Clear global helper caches."""
