@@ -14,6 +14,8 @@ from rich.spinner import Spinner  # type: ignore[import]
 
 from .node import Node, _render_call
 
+IN_JUPYTER = "ipykernel" in sys.modules
+
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
 
@@ -85,7 +87,7 @@ class _RichReporterCtx:
         self.live = Live(
             self._render(),
             refresh_per_second=self.cfg.refresh_per_second,
-            transient=True,
+            transient=not IN_JUPYTER,
         )
         self.live.__enter__()
         self._stop = threading.Event()
@@ -98,9 +100,11 @@ class _RichReporterCtx:
         self.t.join()
         self._drain()
         final_render = self._render(final=True)
-        self.live.update(final_render)
+        self.live.update(final_render, refresh=True)
         self.live.__exit__(exc_type, exc, tb)
-        if "ipykernel" in sys.modules:
+        if IN_JUPYTER:
+            pass
+        else:
             self.live.console.print(final_render)
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
