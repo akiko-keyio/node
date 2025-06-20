@@ -100,7 +100,7 @@ class _RichReporterCtx:
         self.t.join()
         self._drain()
         final_render = self._render(final=True)
-        self.live.update(final_render)
+        self.live.update(final_render, refresh=True)
         self.live.__exit__(exc_type, exc, tb)
         if IN_JUPYTER:
             pass
