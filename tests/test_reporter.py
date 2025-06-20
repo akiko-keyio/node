@@ -38,13 +38,13 @@ def test_format_duration():
     assert ctx._format_dur(3661) == "1h 1m 1s"
 
 
-def test_start_uses_syntax():
+def test_start_highlights_code():
     ctx = _make_ctx()
     ctx.__enter__()
     ctx._start(ctx.root)
     ctx._drain()
     label, _ = ctx.running[ctx.root.key]
     ctx.__exit__(None, None, None)
-    from rich.syntax import Syntax
+    from rich.text import Text
 
-    assert isinstance(label, Syntax)
+    assert isinstance(label, Text)
