@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import functools
 import os
+import pickle
 import threading
 import time
 import warnings
@@ -140,12 +141,22 @@ class DiskJoblib(Cache):
 
     Results are stored under ``<func>/<hash>.pkl`` and the corresponding script
     is written to ``<func>/<hash>.py`` for inspection.
+
+    ``small_file`` sets a byte threshold below which ``pickle`` is used for
+    loading to avoid ``joblib`` overhead on many tiny files.
     """
 
-    def __init__(self, root: str | Path = ".cache", lock: bool = True):
+    def __init__(
+        self,
+        root: str | Path = ".cache",
+        lock: bool = True,
+        *,
+        small_file: int = 1_000_000,
+    ):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
+        self.small_file = small_file
 
     def _path(self, key: str, ext: str = ".pkl") -> Path:
         """Return the cache file path for ``key``."""
@@ -158,9 +169,14 @@ class DiskJoblib(Cache):
 
     def get(self, key: str):
         p = self._path(key)
-        if p.exists():
-            return True, joblib.load(p)
-        return False, None
+        if not p.exists():
+            return False, None
+
+        if p.stat().st_size <= self.small_file:
+            with p.open("rb") as fh:
+                return True, pickle.load(fh)
+
+        return True, joblib.load(p)
 
     def put(self, key: str, value: Any):
         p = self._path(key)

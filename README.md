@@ -76,8 +76,10 @@ flow = Flow(
     executor="thread",  # 或 "process"
     default_workers=4,
 )
+
 ```
 
+`DiskJoblib` 提供 `small_file` 参数，当缓存文件体积在该阈值内时，加载阶段将直接调用 `pickle.load`，避免 `joblib` 在海量小文件场景下的开销。
 运行 `tutorial.py` 后将在缓存目录生成以下文件：
 
 ```
