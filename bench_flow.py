@@ -9,7 +9,7 @@ from src.node import Flow, Config
 def build_flow() -> Tuple[Any, Any]:
     """Build a 400x400 node grid DAG."""
 
-    flow = Flow(config=Config(), executor="thread", workers=8)
+    flow = Flow(config=Config(), executor="thread", default_workers=8)
 
     @flow.node()
     def slow_mul(a: int, b: int) -> int:

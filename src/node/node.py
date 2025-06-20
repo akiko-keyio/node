@@ -530,12 +530,22 @@ class Engine:
         ts = TopologicalSorter({n: n.deps for n in order})
         ts.prepare()
 
+        sems: Dict[Callable[..., Any], threading.Semaphore] = {}
+        for node in order:
+            workers = getattr(node.fn, "_node_workers", 1)
+            if workers == -1:
+                workers = os.cpu_count() or 1
+            if node.fn not in sems:
+                sems[node.fn] = threading.Semaphore(workers)
+
         fut_map = {}
         with pool_cls(max_workers=self.workers) as pool:
 
             def submit(node):
                 if self.executor == "thread":
-                    fut_map[pool.submit(self._eval_node, node)] = node
+                    sem = sems[node.fn]
+                    sem.acquire()
+                    fut_map[pool.submit(self._eval_node, node)] = (node, sem)
                 else:
                     start = time.perf_counter()
                     if self.on_node_start:
@@ -548,8 +558,10 @@ class Engine:
                         return
                     args = [self._resolve(a) for a in node.args]
                     kwargs = {k: self._resolve(v) for k, v in node.kwargs.items()}
+                    sem = sems[node.fn]
+                    sem.acquire()
                     fut = pool.submit(_call_fn, node.fn, args, kwargs)
-                    fut_map[fut] = (node, start)
+                    fut_map[fut] = (node, start, sem)
 
             for n in ts.get_ready():
                 submit(n)
@@ -559,10 +571,11 @@ class Engine:
                 for fut in done:
                     info = fut_map.pop(fut)
                     if self.executor == "thread":
-                        node = info
+                        node, sem = info
                         fut.result()  # re-raise errors immediately
+                        sem.release()
                     else:
-                        node, start = info
+                        node, start, sem = info
                         val = fut.result()
                         self.cache.put(node.key, val)
                         if self._can_save:
@@ -572,6 +585,7 @@ class Engine:
                             self.on_node_end(node, dur, False)
                         with self._lock:
                             self._exec_count += 1
+                        sem.release()
                     ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
@@ -602,11 +616,16 @@ class Flow:
         config: Config | None = None,
         cache: Cache | None = None,
         executor: str = "thread",
-        workers: int | None = None,
+        default_workers: int = 1,
         reporter: Optional[Any] = None,
     ):
         self.config = config or Config()
-        self.engine = Engine(cache=cache, executor=executor, workers=workers)
+        self.default_workers = default_workers
+        self.engine = Engine(
+            cache=cache,
+            executor=executor,
+            workers=default_workers,
+        )
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
         if reporter is None:
             try:  # defer import to avoid cycle
@@ -619,7 +638,7 @@ class Flow:
             self.reporter = reporter
 
     def node(
-        self, *, ignore: Sequence[str] | None = None
+        self, *, ignore: Sequence[str] | None = None, workers: int | None = None
     ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
 
@@ -627,6 +646,11 @@ class Flow:
             setattr(fn, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
             sig_obj = inspect.signature(fn)
             setattr(fn, "_node_sig", sig_obj)
+            setattr(
+                fn,
+                "_node_workers",
+                workers if workers is not None else self.default_workers,
+            )
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:

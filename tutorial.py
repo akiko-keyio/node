@@ -50,7 +50,7 @@ advanced = Flow(
     cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
     config=Config(yaml.safe_load(yaml_text)),
     executor="thread",
-    workers=2,
+    default_workers=2,
 )
 
 
