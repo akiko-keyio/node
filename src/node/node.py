@@ -83,14 +83,9 @@ def _canonical(obj: Any) -> str:
 
 
 def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
-    sig = getattr(node.fn, "_node_sig", None)
-    if sig is None:
-        sig = inspect.signature(node.fn)
-        setattr(node.fn, "_node_sig", sig)
-    bound = sig.bind_partial(*node.args, **node.kwargs)
     ignore = set(getattr(node.fn, "_node_ignore", ()))
     parts = []
-    for k, v in bound.arguments.items():
+    for k, v in node._bound_args.items():
         if k in ignore:
             continue
         if isinstance(v, Node):
@@ -223,6 +218,7 @@ class Node:
         "fn",
         "args",
         "kwargs",
+        "_bound_args",
         "deps",
         "flow",
         "_hash",
@@ -241,12 +237,18 @@ class Node:
         fn,
         args: Tuple = (),
         kwargs: Dict | None = None,
+        bound_args: Mapping[str, Any] | None = None,
         *,
         flow: "Flow" | None = None,
     ):
         self.fn = fn
         self.args = tuple(args)
         self.kwargs = kwargs or {}
+        if bound_args is None:
+            bound_args = (
+                inspect.signature(fn).bind_partial(*self.args, **self.kwargs).arguments
+            )
+        self._bound_args = dict(bound_args)
         self.flow = flow
 
         self.deps: List[Node] = [
@@ -632,7 +634,7 @@ class Flow:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(fn, bound.args, bound.kwargs, flow=self)
+                node = Node(fn, bound.args, bound.kwargs, bound.arguments, flow=self)
                 cached = self._registry.get(node)
                 if cached is not None:
                     return cached
