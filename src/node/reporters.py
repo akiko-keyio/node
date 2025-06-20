@@ -125,9 +125,10 @@ class _RichReporterCtx:
         if self.cfg.show_script_line:
             call = n.lines[-1][-1]
         else:
-            call = _render_call(n.fn, n.args, n.kwargs)
-        label = Syntax(call, "python")
-        self.q.put(("start", n.key, label, time.perf_counter()))
+            call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
+        label = Syntax(call, "python"
+        self.q.put(("start", n.key, call, time.perf_counter()))
+
         if self.orig_start:
             self.orig_start(n)
 

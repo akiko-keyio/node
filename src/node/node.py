@@ -85,7 +85,7 @@ def _canonical(obj: Any) -> str:
 def _canonical_args(node: "Node") -> Tuple[Tuple[str, str], ...]:
     ignore = set(getattr(node.fn, "_node_ignore", ()))
     parts = []
-    for k, v in node._bound_args.items():
+    for k, v in node.bound_args.items():
         if k in ignore:
             continue
         if isinstance(v, Node):
@@ -218,7 +218,6 @@ class Node:
         "fn",
         "args",
         "kwargs",
-        "_bound_args",
         "deps",
         "flow",
         "_hash",
@@ -231,23 +230,23 @@ class Node:
     _hash: int
     _lock: threading.Lock
 
+    @functools.cached_property
+    def bound_args(self) -> Mapping[str, Any]:
+        """Arguments bound to parameter names."""
+        sig = getattr(self.fn, "_node_sig", inspect.signature(self.fn))
+        return sig.bind_partial(*self.args, **self.kwargs).arguments
+
     def __init__(
         self,
         fn,
         args: Tuple = (),
         kwargs: Dict | None = None,
-        bound_args: Mapping[str, Any] | None = None,
         *,
         flow: "Flow" | None = None,
     ):
         self.fn = fn
         self.args = tuple(args)
         self.kwargs = kwargs or {}
-        if bound_args is None:
-            bound_args = (
-                inspect.signature(fn).bind_partial(*self.args, **self.kwargs).arguments
-            )
-        self._bound_args = dict(bound_args)
         self.flow = flow
 
         self.deps: List[Node] = [
@@ -324,6 +323,7 @@ class Node:
                     canonical=True,
                     mapping=var_map,
                     ignore=ignore,
+                    bound=node.bound_args,
                 )
                 lines.append((node._hash, f"{node.key} = {call}"))
             return lines
@@ -371,8 +371,13 @@ def _render_call(
     canonical: bool = False,
     mapping: Dict[Node, str] | None = None,
     ignore: Sequence[str] | None = None,
+    bound: Mapping[str, Any] | None = None,
 ) -> str:
-    """Render a function call with argument names."""
+    """Render a function call with argument names.
+
+    ``bound`` may provide a pre-bound argument mapping to skip signature
+    inspection.
+    """
 
     def render(v: Any) -> str:
         if isinstance(v, Node):
@@ -405,11 +410,12 @@ def _render_call(
     if res is not None:
         return res
 
-    bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    sig = getattr(fn, "_node_sig", inspect.signature(fn))
+    bound_map = (
+        bound if bound is not None else sig.bind_partial(*args, **kwargs).arguments
+    )
     ignore_set = set(ignore or ())
-    parts = [
-        f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set
-    ]
+    parts = [f"{k}={render(v)}" for k, v in bound_map.items() if k not in ignore_set]
     res = f"{fn.__name__}({', '.join(parts)})"
 
     with _ren_lock:
@@ -621,7 +627,7 @@ class Flow:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(fn, bound.args, bound.kwargs, bound.arguments, flow=self)
+                node = Node(fn, bound.args, bound.kwargs, flow=self)
                 cached = self._registry.get(node)
                 if cached is not None:
                     return cached
