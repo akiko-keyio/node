@@ -127,8 +127,12 @@ class _RichReporterCtx:
         else:
             call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
 
-        label = Syntax(call, "python", theme="abap" if IN_JUPYTER else "ansi_dark",
-                       background_color="default").highlight(call)
+        label = Syntax(
+            call,
+            "python",
+            theme="abap" if IN_JUPYTER else "ansi_dark",
+            background_color="default",
+        ).highlight(call)
         label.rstrip()
         self.q.put(("start", n.key, label, time.perf_counter()))
 
