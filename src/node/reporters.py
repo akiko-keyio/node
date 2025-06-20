@@ -190,22 +190,25 @@ class _RichReporterCtx:
         parts = []
         if self.hits:
             parts += [
-                ("⚡ Cache ", "bold"),
-                (f"{self.hits} "),
+                ("⚡️"),
+                ("Cache ","light"),
+                (f"{self.hits} ","bold"),
                 (f"[{fmt(self.hit_time)}]", "gray50"),
             ]
         if self.execs:
             prefix = "\t" if parts else ""
             parts += [
-                (f"{prefix}⭐ Create ", "bold"),
-                (f"{int(self.execs)} "),
+                (f"{prefix}✨️"),
+                ("Create ","light"),
+                (f"{int(self.execs)} ","bold"),
                 (f"[{fmt(exec_time)}]", "gray50"),
             ]
         if not final:
             prefix = "\t" if parts else ""
             parts += [
-                (f"{prefix}📋 Queue ", "bold"),
-                (f"{remain} "),
+                (f"{prefix}📋️"),
+                ("Pending ", "light"),
+                (f"{remain} ","bold"),
                 (f"[ETA: {fmt(eta)}]", "gray50"),
             ]
         return Text.assemble(*parts)
