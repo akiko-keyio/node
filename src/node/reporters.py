@@ -125,10 +125,11 @@ class _RichReporterCtx:
         if self.cfg.show_script_line:
             call = n.lines[-1][-1]
         else:
-            call = _render_call(n.fn, n.args, n.kwargs)
+            call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
         label = Syntax(call, "python", theme="ansi_dark").highlight(call)
         label.rstrip()
         self.q.put(("start", n.key, label, time.perf_counter()))
+
         if self.orig_start:
             self.orig_start(n)
 
@@ -230,6 +231,10 @@ class _RichReporterCtx:
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
             out.append(
-                Text.assemble(icon + " ", label, Text(f" [{dur}]", style="gray50"))
+                Group(
+                    Text(icon + " "),
+                    label,
+                    Text(f" [{dur}]", style="gray50"),
+                )
             )
         return Group(*out)
