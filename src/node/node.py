@@ -35,6 +35,7 @@ __all__ = [
     "Node",
     "Config",
     "Flow",
+    "gather",
 ]
 
 from typing import TYPE_CHECKING
@@ -693,3 +694,24 @@ class Flow:
             _canonical_cache.clear()
         with _ren_lock:
             _render_cache.clear()
+
+
+def gather(*nodes: Node) -> Node:
+    """Aggregate multiple nodes into a single list result.
+
+    All ``nodes`` must belong to the same :class:`Flow`. The returned node
+    produces a list of each input node's value in the provided order.
+    """
+
+    if not nodes:
+        raise ValueError("no nodes provided")
+
+    flow = nodes[0]._require_flow()
+    if any(n.flow is not flow for n in nodes):
+        raise ValueError("nodes belong to different Flow instances")
+
+    @flow.node()
+    def _gather(*items):
+        return list(items)
+
+    return _gather(*nodes)

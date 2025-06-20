@@ -7,6 +7,7 @@ from .node import (
     Flow,
     MemoryLRU,
     Node,
+    gather,
 )
 from .logger import logger
 
@@ -24,6 +25,7 @@ __all__ = [
     "DiskJoblib",
     "Config",
     "Flow",
+    "gather",
     "RichReporter",
     "logger",
 ]
