@@ -28,7 +28,7 @@ logger.add(
 
 __all__ = ["logger", "console"]
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     logger.debug("\u8fd9\u662f\u4e00\u4e2a\u8c03\u8bd5\u4fe1\u606f")
     logger.info("\u7528\u6237 {user} \u767b\u5f55\u6210\u529f", user="alice")
     import time

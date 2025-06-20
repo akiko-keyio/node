@@ -468,7 +468,9 @@ class Engine:
             return val if hit else None
         return v
 
-    def _eval_node(self, n: Node):
+    def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
+        if sem is not None:
+            sem.acquire()
         start = time.perf_counter()
         if self.on_node_start is not None:
             self.on_node_start(n)
@@ -477,6 +479,8 @@ class Engine:
             dur = time.perf_counter() - start
             if self.on_node_end is not None:
                 self.on_node_end(n, dur, True)
+            if sem is not None:
+                sem.release()
             return val
 
         args = [self._resolve(a) for a in n.args]
@@ -490,6 +494,8 @@ class Engine:
             self.on_node_end(n, dur, False)
         with self._lock:
             self._exec_count += 1
+        if sem is not None:
+            sem.release()
         return val
 
     # ------------------------------------------------------------------
@@ -544,8 +550,7 @@ class Engine:
             def submit(node):
                 if self.executor == "thread":
                     sem = sems[node.fn]
-                    sem.acquire()
-                    fut_map[pool.submit(self._eval_node, node)] = (node, sem)
+                    fut_map[pool.submit(self._eval_node, node, sem)] = node
                 else:
                     start = time.perf_counter()
                     if self.on_node_start:
@@ -571,9 +576,8 @@ class Engine:
                 for fut in done:
                     info = fut_map.pop(fut)
                     if self.executor == "thread":
-                        node, sem = info
+                        node = info
                         fut.result()  # re-raise errors immediately
-                        sem.release()
                     else:
                         node, start, sem = info
                         val = fut.result()
