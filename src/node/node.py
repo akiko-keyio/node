@@ -324,6 +324,7 @@ class Node:
                     canonical=True,
                     mapping=var_map,
                     ignore=ignore,
+                    bound_args=node._bound_args,
                 )
                 lines.append((node._hash, f"{node.key} = {call}"))
             return lines
@@ -371,6 +372,7 @@ def _render_call(
     canonical: bool = False,
     mapping: Dict[Node, str] | None = None,
     ignore: Sequence[str] | None = None,
+    bound_args: Mapping[str, Any] | None = None,
 ) -> str:
     """Render a function call with argument names."""
 
@@ -384,6 +386,7 @@ def _render_call(
                 v.kwargs,
                 canonical=canonical,
                 ignore=getattr(v.fn, "_node_ignore", ()),
+                bound_args=v._bound_args,
             )
         return _canonical(v) if canonical else repr(v)
 
@@ -405,11 +408,10 @@ def _render_call(
     if res is not None:
         return res
 
-    bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    if bound_args is None:
+        bound_args = inspect.signature(fn).bind_partial(*args, **kwargs).arguments
     ignore_set = set(ignore or ())
-    parts = [
-        f"{k}={render(v)}" for k, v in bound.arguments.items() if k not in ignore_set
-    ]
+    parts = [f"{k}={render(v)}" for k, v in bound_args.items() if k not in ignore_set]
     res = f"{fn.__name__}({', '.join(parts)})"
 
     with _ren_lock:
