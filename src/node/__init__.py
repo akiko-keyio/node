@@ -9,7 +9,7 @@ from .node import (
     Node,
     gather,
 )
-from .logger import logger
+from .logger import logger, console
 
 try:  # optional rich dependency
     from .reporters import RichReporter as _RichReporter
@@ -28,4 +28,5 @@ __all__ = [
     "gather",
     "RichReporter",
     "logger",
+    "console",
 ]
