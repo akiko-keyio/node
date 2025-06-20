@@ -126,8 +126,11 @@ class _RichReporterCtx:
             call = n.lines[-1][-1]
         else:
             call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
-        label = Syntax(call, "python"
-        self.q.put(("start", n.key, call, time.perf_counter()))
+
+        label = Syntax(call, "python", theme="abap" if IN_JUPYTER else "ansi_dark",
+                       background_color="default").highlight(call)
+        label.rstrip()
+        self.q.put(("start", n.key, label, time.perf_counter()))
 
         if self.orig_start:
             self.orig_start(n)
@@ -201,7 +204,7 @@ class _RichReporterCtx:
         if self.hits:
             parts += [
                 ("⚡️"),
-                ("Cache ", "light"),
+                (" Cache ","bold"),
                 (f"{self.hits} ", "bold"),
                 (f"[{fmt(self.hit_time)}]", "gray50"),
             ]
@@ -209,7 +212,7 @@ class _RichReporterCtx:
             prefix = "\t" if parts else ""
             parts += [
                 (f"{prefix}✨️"),
-                ("Create ", "light"),
+                (" Create ", "bold"),
                 (f"{int(self.execs)} ", "bold"),
                 (f"[{fmt(exec_time)}]", "gray50"),
             ]
@@ -217,7 +220,7 @@ class _RichReporterCtx:
             prefix = "\t" if parts else ""
             parts += [
                 (f"{prefix}📋️"),
-                ("Pending ", "light"),
+                (" Pending ", "bold"),
                 (f"{remain} ", "bold"),
                 (f"[ETA: {fmt(eta)}]", "gray50"),
             ]
@@ -229,11 +232,5 @@ class _RichReporterCtx:
         icon = str(self.spinner.render(now))
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
-            out.append(
-                Group(
-                    Text(icon + " "),
-                    label,
-                    Text(f" [{dur}]", style="gray50"),
-                )
-            )
+            out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
         return Group(*out)
