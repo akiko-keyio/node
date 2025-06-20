@@ -224,7 +224,6 @@ class Node:
         "_hash",
         "_raw",
         "_lock",
-        "_ancestors",
         "__dict__",
         "__weakref__",
     )
@@ -269,16 +268,6 @@ class Node:
         _hash = hashlib.blake2b(repr(raw).encode(), digest_size=6).hexdigest()
         self._hash = int(_hash, 16)
         self._lock = threading.Lock()
-
-        ancestors: set[Node] = set()
-        for d in self.deps:
-            anc = getattr(d, "_ancestors", None)
-            if anc:
-                ancestors.update(anc)
-            ancestors.add(d)
-        if self in ancestors:
-            raise ValueError("Cycle detected in DAG")
-        self._ancestors = ancestors
 
     # --------------------------------------------------------------
     def __getstate__(self):
