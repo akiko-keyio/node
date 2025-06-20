@@ -11,6 +11,7 @@ from rich.live import Live  # type: ignore[import]
 from rich.console import Group  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
+from rich.syntax import Syntax  # type: ignore[import]
 
 from .node import Node, _render_call
 
@@ -125,7 +126,8 @@ class _RichReporterCtx:
             call = n.lines[-1][-1]
         else:
             call = _render_call(n.fn, n.args, n.kwargs)
-        self.q.put(("start", n.key, call, time.perf_counter()))
+        label = Syntax(call, "python")
+        self.q.put(("start", n.key, label, time.perf_counter()))
         if self.orig_start:
             self.orig_start(n)
 
@@ -226,5 +228,11 @@ class _RichReporterCtx:
         icon = str(self.spinner.render(now))
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
-            out.append(Text.assemble(f"{icon} {label} ", (f"[{dur}]", "gray50")))
+            out.append(
+                Group(
+                    Text(icon + " "),
+                    label,
+                    Text(f" [{dur}]", style="gray50"),
+                )
+            )
         return Group(*out)
