@@ -8,12 +8,13 @@ import threading
 from queue import SimpleQueue, Empty
 
 from rich.live import Live  # type: ignore[import]
-from rich.console import Group  # type: ignore[import]
+from rich.console import Group, Console  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
 
 from .node import Node, _render_call
+from .logger import console as _console
 
 IN_JUPYTER = "ipykernel" in sys.modules
 
@@ -33,7 +34,13 @@ class RichReporter:
     status is printed to ``stdout``.
     """
 
-    def __init__(self, refresh_per_second: int = 20, show_script_line: bool = True):
+    def __init__(
+        self,
+        refresh_per_second: int = 20,
+        show_script_line: bool = True,
+        *,
+        console: Console | None = None,
+    ):
         """Create reporter.
 
         Parameters
@@ -46,6 +53,7 @@ class RichReporter:
 
         self.refresh_per_second = refresh_per_second
         self.show_script_line = show_script_line
+        self.console = console or _console
 
     def attach(self, engine: "Engine", root: Node):
         """Return a context manager bound to ``engine`` and ``root``."""
@@ -98,6 +106,7 @@ class _RichReporterCtx:
             self._render(),
             refresh_per_second=self.cfg.refresh_per_second,
             transient=not IN_JUPYTER,
+            console=self.cfg.console,
         )
         self.live.__enter__()
         self._stop = threading.Event()
@@ -127,8 +136,12 @@ class _RichReporterCtx:
         else:
             call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
 
-        label = Syntax(call, "python", theme="abap" if IN_JUPYTER else "ansi_dark",
-                       background_color="default").highlight(call)
+        label = Syntax(
+            call,
+            "python",
+            theme="abap" if IN_JUPYTER else "ansi_dark",
+            background_color="default",
+        ).highlight(call)
         label.rstrip()
         self.q.put(("start", n.key, label, time.perf_counter()))
 

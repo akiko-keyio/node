@@ -26,7 +26,7 @@ logger.add(
     format="{message}",
 )
 
-__all__ = ["logger"]
+__all__ = ["logger", "console"]
 
 if __name__ == "__main__":
     logger.debug("\u8fd9\u662f\u4e00\u4e2a\u8c03\u8bd5\u4fe1\u606f")
