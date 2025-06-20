@@ -258,11 +258,9 @@ class Node:
         if any(d is self for d in self.deps):
             raise ValueError("Cycle detected in DAG")
 
-        child_hashes = tuple(d._hash for d in self.deps)
         raw = (
             self.fn.__qualname__,
             _canonical_args(self),
-            child_hashes,
         )
         self._raw = raw
         _hash = hashlib.blake2b(repr(raw).encode(), digest_size=6).hexdigest()
@@ -399,7 +397,7 @@ def _render_call(
         canonical,
         tuple(key_of(a) for a in args),
         tuple(sorted((k, key_of(v)) for k, v in kwargs.items())),
-        tuple(sorted((d._hash, v) for d, v in mapping.items())) if mapping else None,
+        tuple(sorted((d.key, v) for d, v in mapping.items())) if mapping else None,
         tuple(sorted(ignore or [])),
     )
     with _ren_lock:
