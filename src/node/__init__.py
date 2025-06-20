@@ -8,6 +8,7 @@ from .node import (
     MemoryLRU,
     Node,
 )
+from .logger import logger
 
 try:  # optional rich dependency
     from .reporters import RichReporter as _RichReporter
@@ -24,4 +25,5 @@ __all__ = [
     "Config",
     "Flow",
     "RichReporter",
+    "logger",
 ]

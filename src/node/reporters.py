@@ -127,9 +127,12 @@ class _RichReporterCtx:
         else:
             call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
 
-        label = Syntax(call, "python", theme="abap" if IN_JUPYTER else "ansi_dark",
-                       background_color="default").highlight(call)
-        label.rstrip()
+        label = Syntax(
+            call,
+            "python",
+            theme="abap" if IN_JUPYTER else "ansi_dark",
+            background_color="default",
+        )
         self.q.put(("start", n.key, label, time.perf_counter()))
 
         if self.orig_start:
@@ -203,24 +206,24 @@ class _RichReporterCtx:
         parts = []
         if self.hits:
             parts += [
-                ("⚡️"),
-                (" Cache ","bold"),
+                "⚡️",
+                ("Cache ", "bold"),
                 (f"{self.hits} ", "bold"),
                 (f"[{fmt(self.hit_time)}]", "gray50"),
             ]
         if self.execs:
             prefix = "\t" if parts else ""
             parts += [
-                (f"{prefix}✨️"),
-                (" Create ", "bold"),
+                f"{prefix}✨️",
+                ("Create ", "bold"),
                 (f"{int(self.execs)} ", "bold"),
                 (f"[{fmt(exec_time)}]", "gray50"),
             ]
         if not final:
             prefix = "\t" if parts else ""
             parts += [
-                (f"{prefix}📋️"),
-                (" Pending ", "bold"),
+                f"{prefix}📋️",
+                ("Pending ", "bold"),
                 (f"{remain} ", "bold"),
                 (f"[ETA: {fmt(eta)}]", "gray50"),
             ]
@@ -232,5 +235,9 @@ class _RichReporterCtx:
         icon = str(self.spinner.render(now))
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
-            out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
+            if isinstance(label, Syntax):
+                renderable = label.highlight(label.code)
+            else:
+                renderable = label
+            out.append(Text.assemble(icon, " ", renderable, (f" [{dur}]", "gray50")))
         return Group(*out)
