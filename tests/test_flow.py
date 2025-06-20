@@ -46,7 +46,8 @@ def test_generate_populates_cache(flow_factory):
         return x + 1
 
     node = inc(2)
-    flow.generate(node)
+    res = node.generate()
+    assert res is None
     assert calls == [2]
     # get should reuse cache without recomputing
     assert node.get() == 3
@@ -69,6 +70,29 @@ def test_cache_skips_execution(flow_factory):
     # Second run should come entirely from cache
     assert flow.run(node) == 8
     assert calls == [4]
+
+
+def test_create_overwrites_cache(flow_factory):
+    flow = flow_factory()
+    calls = []
+
+    @flow.node()
+    def add(x):
+        calls.append(x)
+        return x + 1
+
+    node = add(1)
+    assert flow.run(node) == 2
+    assert calls == [1]
+    # cache hit
+    assert node.get() == 2
+    assert calls == [1]
+
+    assert node.create() == 2
+    assert calls == [1, 1]
+    # subsequent run uses cache again
+    assert node.get() == 2
+    assert calls == [1, 1]
 
 
 def test_defaults_override(flow_factory):
@@ -431,7 +455,7 @@ def test_delete_cache(flow_factory, tmp_path):
     p = disk._path(node.key)
     assert p.exists()
 
-    node.delete_cache()
+    node.delete()
 
     assert node.key not in mem._lru
     assert not p.exists()
@@ -460,7 +484,7 @@ def test_default_reporter(flow_factory):
     assert flow.run(node) == 3
     assert reporter.count == 1
 
-    node.delete_cache()
+    node.delete()
     extra = DummyReporter()
     assert flow.run(node, reporter=extra) == 3
     assert reporter.count == 1
