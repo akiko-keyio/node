@@ -10,7 +10,7 @@ import threading
 import time
 import warnings
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     ProcessPoolExecutor,
@@ -20,7 +20,7 @@ from concurrent.futures import (
 from contextlib import nullcontext, suppress
 from graphlib import TopologicalSorter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from weakref import WeakValueDictionary
 
 import joblib  # type: ignore[import]
@@ -720,22 +720,29 @@ class Flow:
             _render_cache.clear()
 
 
-def gather(*nodes: Node) -> Node:
+def gather(*nodes: Node | Iterable[Node]) -> Node:
     """Aggregate multiple nodes into a single list result.
 
-    All ``nodes`` must belong to the same :class:`Flow`. The returned node
-    produces a list of each input node's value in the provided order.
+    ``nodes`` may be passed either as positional arguments or as a single
+    iterable.  All input nodes must belong to the same :class:`Flow`. The
+    returned node produces a list of each input node's value in the provided
+    order.
     """
 
-    if not nodes:
+    if len(nodes) == 1 and not isinstance(nodes[0], Node):
+        nodes_list = tuple(cast(Iterable[Node], nodes[0]))
+    else:
+        nodes_list = cast(Tuple[Node, ...], nodes)
+
+    if not nodes_list:
         raise ValueError("no nodes provided")
 
-    flow = nodes[0]._require_flow()
-    if any(n.flow is not flow for n in nodes):
+    flow = nodes_list[0]._require_flow()
+    if any(n.flow is not flow for n in nodes_list):
         raise ValueError("nodes belong to different Flow instances")
 
     @flow.node()
     def _gather(*items):
         return list(items)
 
-    return _gather(*nodes)
+    return _gather(*nodes_list)
