@@ -15,6 +15,10 @@ def test_gather_util(flow_factory):
     result = flow.run(gather(n1, n2))
     assert result == [2, 3]
 
+    # allow iterable input
+    result2 = flow.run(gather([n1, n2]))
+    assert result2 == [2, 3]
+
 
 def test_gather_flow_mismatch(flow_factory):
     flow1 = flow_factory()

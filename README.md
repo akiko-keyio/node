@@ -48,8 +48,8 @@ def train(x, y, large_df, model):
 result = flow.run(square(add(2, 3)))
 print(result)  # 25
 
-# gather 多个独立节点
-result = flow.run(gather(add(1, 2), add(3, 4)))
+# gather 多个独立节点（也可传入列表）
+result = flow.run(gather([add(1, 2), add(3, 4)]))
 print(result)  # [3, 7]
 ```
 
