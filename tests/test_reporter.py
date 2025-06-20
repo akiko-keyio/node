@@ -20,15 +20,15 @@ def _make_ctx(hits=0, execs=0):
 def test_header_omits_cache_when_zero():
     ctx = _make_ctx(hits=0, execs=1)
     header = ctx._header(final=False).plain
-    assert "⚡ Cache" not in header
-    assert "⭐ Create" in header
+    assert "⚡️Cache" not in header
+    assert "✨️Create" in header
 
 
 def test_header_omits_create_when_zero():
     ctx = _make_ctx(hits=1, execs=0)
     header = ctx._header(final=False).plain
-    assert "⭐ Create" not in header
-    assert "⚡ Cache" in header
+    assert "✨️Create" not in header
+    assert "⚡️Cache" in header
 
 
 def test_format_duration():

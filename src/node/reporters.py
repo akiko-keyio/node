@@ -23,7 +23,14 @@ __all__ = ["RichReporter"]
 
 
 class RichReporter:
-    """Display execution status using ``rich`` in real time."""
+    """Rich based progress reporter.
+
+    ``RichReporter`` hooks into :class:`~node.node.Engine` callbacks to display
+    live execution progress. A separate thread updates a status bar using the
+    :mod:`rich` library while nodes are being executed. When running inside
+    IPython or Jupyter, the output is kept within the cell; otherwise the final
+    status is printed to ``stdout``.
+    """
 
     def __init__(self, refresh_per_second: int = 20, show_script_line: bool = True):
         """Create reporter.
@@ -40,10 +47,13 @@ class RichReporter:
         self.show_script_line = show_script_line
 
     def attach(self, engine: "Engine", root: Node):
+        """Return a context manager bound to ``engine`` and ``root``."""
         return _RichReporterCtx(self, engine, root)
 
 
 class _RichReporterCtx:
+    """Context manager handling ``rich`` updates for a run."""
+
     def __init__(self, reporter: RichReporter, engine: "Engine", root: Node):
         self.cfg = reporter
         self.engine = engine
@@ -55,7 +65,6 @@ class _RichReporterCtx:
         self.execs = 0
         self.exec_start: float | None = None
         self.exec_end: float | None = None
-        self.root_info: tuple[str, float, bool] | None = None
         self.spinner = Spinner("dots")
 
     @staticmethod
@@ -161,8 +170,6 @@ class _RichReporterCtx:
                     end = ts + dur
                     if self.exec_end is None or end > self.exec_end:
                         self.exec_end = end
-                if k == self.root.key:
-                    self.root_info = (label, dur, cached)
             elif typ == "flow":
                 wall = rest[0]
                 if self.exec_start is None:
@@ -191,16 +198,16 @@ class _RichReporterCtx:
         if self.hits:
             parts += [
                 ("⚡️"),
-                ("Cache ","light"),
-                (f"{self.hits} ","bold"),
+                ("Cache ", "light"),
+                (f"{self.hits} ", "bold"),
                 (f"[{fmt(self.hit_time)}]", "gray50"),
             ]
         if self.execs:
             prefix = "\t" if parts else ""
             parts += [
                 (f"{prefix}✨️"),
-                ("Create ","light"),
-                (f"{int(self.execs)} ","bold"),
+                ("Create ", "light"),
+                (f"{int(self.execs)} ", "bold"),
                 (f"[{fmt(exec_time)}]", "gray50"),
             ]
         if not final:
@@ -208,7 +215,7 @@ class _RichReporterCtx:
             parts += [
                 (f"{prefix}📋️"),
                 ("Pending ", "light"),
-                (f"{remain} ","bold"),
+                (f"{remain} ", "bold"),
                 (f"[ETA: {fmt(eta)}]", "gray50"),
             ]
         return Text.assemble(*parts)
