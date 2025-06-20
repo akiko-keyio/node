@@ -295,7 +295,7 @@ def test_chaincache_promotion(flow_factory, tmp_path):
 
 
 def test_parallel_execution(flow_factory):
-    flow = flow_factory(executor="thread", workers=2)
+    flow = flow_factory(executor="thread", default_workers=2)
 
     @flow.node()
     def slow(v):
@@ -315,6 +315,29 @@ def test_parallel_execution(flow_factory):
     assert flow.run(root) == 3
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.4
+
+
+def test_node_worker_limit(flow_factory):
+    flow = flow_factory(executor="thread", default_workers=4)
+
+    @flow.node(workers=1)
+    def slow(v):
+        import time
+
+        time.sleep(0.2)
+        return v
+
+    @flow.node()
+    def combine(a, b):
+        return a + b
+
+    root = combine(slow(1), slow(2))
+    import time
+
+    t0 = time.perf_counter()
+    assert flow.run(root) == 3
+    elapsed = time.perf_counter() - t0
+    assert elapsed >= 0.4
 
 
 def test_cycle_detection():

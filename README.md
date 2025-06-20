@@ -6,7 +6,7 @@ Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型�
 
 - **任务装饰器**：普通函数经 `@flow.node()` 包装后即可组成 DAG，可用 `ignore` 参数排除大型对象。
 - **两级缓存**：默认同时启用内存 LRU 与磁盘缓存，避免重复计算。
-- **并行执行**：支持线程或进程池，`workers` 参数控制并发量。
+- **并行执行**：支持线程或进程池，可在装饰器中用 `workers` 指定单个任务的并发数。
 - **脚本表示**：任意节点的 `repr()` 都会生成等效的 Python 调用脚本。
 - **配置系统**：通过 `Config` 对象集中管理任务默认参数，支持从 YAML 加载。
 - **回调钩子**：`on_node_end` 与 `on_flow_end` 可用来收集统计信息。
@@ -30,7 +30,7 @@ from node.node import Flow
 flow = Flow()
 
 
-@flow.node()
+@flow.node(workers=2)
 def add(x, y):
     return x + y
 
@@ -69,7 +69,7 @@ from node.node import Flow, ChainCache, MemoryLRU, DiskJoblib
 flow = Flow(
     cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
     executor="thread",  # 或 "process"
-    workers=4,
+    default_workers=4,
 )
 ```
 
