@@ -73,3 +73,16 @@ def test_track_yields_all_values():
         assert out == [0, 1, 2]
     finally:
         ctx.__exit__(None, None, None)
+
+
+def test_track_renders_description():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        gen = ctx.track(range(1), description="my_node", total=1)
+        next(gen)
+        with ctx.cfg.console.capture() as cap:
+            ctx.cfg.console.print(ctx._render())
+        assert "my_node" in cap.get()
+    finally:
+        ctx.__exit__(None, None, None)

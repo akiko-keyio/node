@@ -10,6 +10,7 @@ from queue import SimpleQueue, Empty
 
 from rich.live import Live  # type: ignore[import]
 from rich.console import Group, Console  # type: ignore[import]
+from rich.columns import Columns  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
@@ -307,10 +308,15 @@ class _RichReporterCtx:
         out = [self._header(final)]
         now = time.perf_counter()
         icon = str(self.spinner.render(now))
+        progs = list(self._progs)
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
-            out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
-        for prog in self._progs:
+            line: Text | Columns
+            line = Text.assemble(icon, " ", label, (f" [{dur}]", "gray50"))
+            if progs:
+                line = Columns([line, progs.pop(0).get_renderable()], expand=True)
+            out.append(line)
+        for prog in progs:
             out.append(prog.get_renderable())
         return Group(*out)
 
