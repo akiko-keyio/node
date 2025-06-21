@@ -48,3 +48,41 @@ def test_start_uses_syntax():
     from rich.text import Text
 
     assert isinstance(label, Text)
+
+
+def test_pause_allows_nested_live():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        from rich.live import Live
+
+        with ctx.pause():
+            with Live("hi", console=ctx.cfg.console):
+                pass
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_track_yields_all_values():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        out = []
+        for x in ctx.track(range(3), total=3):
+            out.append(x)
+        assert out == [0, 1, 2]
+    finally:
+        ctx.__exit__(None, None, None)
+
+
+def test_track_renders_description():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        gen = ctx.track(range(1), description="my_node", total=1)
+        next(gen)
+        with ctx.cfg.console.capture() as cap:
+            ctx.cfg.console.print(ctx._render())
+        assert "my_node" in cap.get()
+    finally:
+        ctx.__exit__(None, None, None)
