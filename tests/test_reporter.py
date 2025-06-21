@@ -48,3 +48,16 @@ def test_start_uses_syntax():
     from rich.text import Text
 
     assert isinstance(label, Text)
+
+
+def test_pause_allows_nested_live():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        from rich.live import Live
+
+        with ctx.pause():
+            with Live("hi", console=ctx.cfg.console):
+                pass
+    finally:
+        ctx.__exit__(None, None, None)

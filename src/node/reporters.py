@@ -91,6 +91,7 @@ class _RichReporterCtx:
         self.exec_start: float | None = None
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
+        self._pause = threading.Event()
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -146,6 +147,11 @@ class _RichReporterCtx:
         self.engine.on_flow_end = self.orig_flow
 
     # --------------------------------------------------------------
+    def pause(self):
+        """Temporarily release the live console."""
+        return _PauseCtx(self)
+
+    # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
         if self.cfg.show_script_line:
             call = n.lines[-1][-1]
@@ -178,8 +184,9 @@ class _RichReporterCtx:
     def _loop(self) -> None:
         sleep = 1.0 / self.cfg.refresh_per_second
         while not self._stop.is_set():
-            self._drain()
-            self.live.update(self._render())
+            if not self._pause.is_set():
+                self._drain()
+                self.live.update(self._render())
             time.sleep(sleep)
         self._drain()
 
@@ -263,3 +270,18 @@ class _RichReporterCtx:
             dur = self._format_dur(now - ts)
             out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
         return Group(*out)
+
+
+class _PauseCtx:
+    """Context manager pausing reporter updates."""
+
+    def __init__(self, ctx: _RichReporterCtx):
+        self.ctx = ctx
+
+    def __enter__(self):
+        self.ctx._pause.set()
+        self.ctx.live.stop()
+
+    def __exit__(self, exc_type, exc, tb):
+        self.ctx.live.start(refresh=True)
+        self.ctx._pause.clear()
