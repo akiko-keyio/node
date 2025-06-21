@@ -2,6 +2,7 @@ from __future__ import annotations
 # coverage: ignore-file
 
 from typing import Dict, TYPE_CHECKING
+from contextlib import nullcontext
 import time
 import sys
 import threading
@@ -65,7 +66,13 @@ class RichReporter:
             self.console = console
 
     def attach(self, engine: "Engine", root: Node):
-        """Return a context manager bound to ``engine`` and ``root``."""
+        """Return a context manager bound to ``engine`` and ``root``.
+
+        If the console already has an active live display, a no-op context
+        manager is returned to avoid nested :class:`rich.live.Live` errors.
+        """
+        if getattr(self.console, "_live", None) is not None:
+            return nullcontext()
         return _RichReporterCtx(self, engine, root)
 
 
