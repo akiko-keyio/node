@@ -587,7 +587,7 @@ class Engine:
                     sem = sems[node.fn]
                     sem.acquire()
                     fut = pool.submit(_call_fn, node.fn, args, kwargs)
-                    fut_map[fut] = (node, start, sem)
+                    fut_map[fut] = (node, start, sem, args, kwargs)
 
             for n in ts.get_ready():
                 submit(n)
@@ -600,8 +600,11 @@ class Engine:
                         node = info
                         fut.result()  # re-raise errors immediately
                     else:
-                        node, start, sem = info
-                        val = fut.result()
+                        node, start, sem, args, kwargs = info
+                        try:
+                            val = fut.result()
+                        except (pickle.PicklingError, AttributeError):
+                            val = _call_fn(node.fn, args, kwargs)
                         self.cache.put(node.key, val)
                         if self._can_save:
                             self.cache.save_script(node)
