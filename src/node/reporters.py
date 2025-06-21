@@ -40,6 +40,7 @@ class RichReporter:
         show_script_line: bool = True,
         *,
         console: Console | None = None,
+        force_terminal: bool = False,
     ):
         """Create reporter.
 
@@ -49,11 +50,19 @@ class RichReporter:
             UI refresh rate.
         show_script_line:
             Display canonical script line instead of ``_render_call``.
+        force_terminal:
+            Force Rich to treat the console as a real terminal.
         """
 
         self.refresh_per_second = refresh_per_second
         self.show_script_line = show_script_line
-        self.console = console or _console
+        if console is None:
+            if force_terminal:
+                self.console = Console(force_terminal=True)
+            else:
+                self.console = _console
+        else:
+            self.console = console
 
     def attach(self, engine: "Engine", root: Node):
         """Return a context manager bound to ``engine`` and ``root``."""

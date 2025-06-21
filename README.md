@@ -128,6 +128,22 @@ add:
 python tutorial.py
 ```
 
+## 解决多进程下 RichReporter 跳动
+
+在进程池执行时，多个进程同时向终端写入会导致 `RichReporter` 的进度条跳动。
+可以在主进程独占终端，并强制 Rich 将控制台视为真实终端：
+
+```python
+from rich.console import Console
+from node.reporters import RichReporter
+
+flow = Flow(executor="process")
+reporter = RichReporter(console=Console(force_terminal=True))
+flow.run(root, reporter=reporter)
+```
+
+确保工作进程不要向标准输出打印内容，以避免刷新冲突。
+
 
 
 
