@@ -61,3 +61,15 @@ def test_pause_allows_nested_live():
                 pass
     finally:
         ctx.__exit__(None, None, None)
+
+
+def test_track_yields_all_values():
+    ctx = _make_ctx()
+    ctx.__enter__()
+    try:
+        out = []
+        for x in ctx.track(range(3), total=3):
+            out.append(x)
+        assert out == [0, 1, 2]
+    finally:
+        ctx.__exit__(None, None, None)

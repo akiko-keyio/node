@@ -13,6 +13,13 @@ from rich.console import Group, Console  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 from .node import Node, _render_call
 from .logger import console as _console
@@ -92,6 +99,7 @@ class _RichReporterCtx:
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
         self._pause = threading.Event()
+        self._progs: list[Progress] = []
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -150,6 +158,39 @@ class _RichReporterCtx:
     def pause(self):
         """Temporarily release the live console."""
         return _PauseCtx(self)
+
+    def track(
+        self,
+        sequence,
+        description: str = "Working...",
+        total: int | None = None,
+    ):
+        """Iterate over ``sequence`` with an embedded progress bar."""
+        columns = [
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(elapsed_when_finished=True),
+        ]
+        prog = Progress(
+            *columns,
+            auto_refresh=False,
+            console=self.cfg.console,
+            transient=False,
+        )
+        if total is None:
+            try:
+                total = len(sequence)  # type: ignore[arg-type]
+            except Exception:
+                total = None
+        task = prog.add_task(description, total=total)
+        self._progs.append(prog)
+        try:
+            for item in sequence:
+                yield item
+                prog.advance(task)
+        finally:
+            self._progs.remove(prog)
 
     # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
@@ -269,6 +310,8 @@ class _RichReporterCtx:
         for label, ts in list(self.running.values()):
             dur = self._format_dur(now - ts)
             out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
+        for prog in self._progs:
+            out.append(prog.get_renderable())
         return Group(*out)
 
 
