@@ -183,7 +183,12 @@ class DiskJoblib(Cache):
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else nullcontext()
         with ctx:
-            joblib.dump(value, p)
+            data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            if len(data) <= self.small_file:
+                with p.open("wb") as fh:
+                    fh.write(data)
+            else:
+                joblib.dump(value, p)
 
     def delete(self, key: str) -> None:
         for ext in (".pkl", ".py"):

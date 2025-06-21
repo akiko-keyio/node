@@ -80,6 +80,10 @@ flow = Flow(
 ```
 
 `DiskJoblib` 提供 `small_file` 参数，当缓存文件体积在该阈值内时，加载阶段将直接调用 `pickle.load`，避免 `joblib` 在海量小文件场景下的开销。
+
+在 500 个 6 字节字符串的基准测试中，设置 `small_file=1_000_000` 的第二次读取耗时约
+`0.0002` 秒，而强制使用 `joblib` 时约 `0.003` 秒，速度提升近 15 倍。基准脚本位于
+`tests/test_small_file_perf.py`。
 运行 `tutorial.py` 后将在缓存目录生成以下文件：
 
 ```

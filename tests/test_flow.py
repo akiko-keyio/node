@@ -4,7 +4,6 @@ import threading
 
 import yaml  # type: ignore[import]
 import pytest
-import joblib  # type: ignore[import]
 from node.node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
 
 
@@ -430,15 +429,15 @@ def test_cache_fallback_hash(flow_factory, tmp_path, monkeypatch):
     def inc(x):
         return x + 1
 
-    orig_dump = joblib.dump
+    orig_put = disk.put
 
-    def bad_first_dump(obj, path, *args, **kwargs):
-        if not hasattr(bad_first_dump, "done"):
-            bad_first_dump.done = True
+    def bad_first_put(key, value):
+        if not hasattr(bad_first_put, "done"):
+            bad_first_put.done = True
             raise OSError("fail")
-        return orig_dump(obj, path, *args, **kwargs)
+        return orig_put(key, value)
 
-    monkeypatch.setattr(joblib, "dump", bad_first_dump)
+    monkeypatch.setattr(disk, "put", bad_first_put)
 
     node = inc(5)
     with pytest.raises(OSError):
