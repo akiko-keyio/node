@@ -112,6 +112,7 @@ class _RichReporterCtx:
         self.spinner = Spinner("dots")
         self.current_node: str | None = None
         self.proc_queue: Queue | None = None
+        self.seen: set[str] = set()
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -138,7 +139,9 @@ class _RichReporterCtx:
         self.engine.on_node_start = self._start
         self.engine.on_node_end = self._end
         self.engine.on_flow_end = self._flow
-        self.total = len(self.root.order)
+        order = self.root.order
+        self.total = len(order)
+        self.seen = {n.key for n in order}
         self.live = Live(
             self._render(),
             refresh_per_second=self.cfg.refresh_per_second,
@@ -243,6 +246,9 @@ class _RichReporterCtx:
             if typ == "start":
                 k, label, ts = rest
                 self.running[k] = (label, ts)
+                if k not in self.seen:
+                    self.seen.add(k)
+                    self.total += 1
             elif typ == "end":
                 k, dur, cached = rest
                 label, ts = self.running.pop(k, (k, time.perf_counter()))
