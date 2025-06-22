@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable, Generator, Any
 
 from .node import (
     ChainCache,
@@ -11,10 +11,13 @@ from .node import (
 )
 from .logger import logger, console
 
+track: Optional[Callable[..., Generator[Any, None, None]]] = None
+
 try:  # optional rich dependency
-    from .reporters import RichReporter as _RichReporter
+    from .reporters import RichReporter as _RichReporter, track as _track
 
     RichReporter: Optional[type] = _RichReporter
+    track = _track
 except Exception:  # pragma: no cover - optional
     RichReporter = None
 
@@ -27,6 +30,7 @@ __all__ = [
     "Flow",
     "gather",
     "RichReporter",
+    "track",
     "logger",
     "console",
 ]

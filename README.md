@@ -144,6 +144,25 @@ flow.run(root, reporter=reporter)
 
 确保工作进程不要向标准输出打印内容，以避免刷新冲突。
 
+## 节点内部进度条
+
+`track` 辅助函数可用于在节点内部追踪循环进度，并与 `RichReporter` 的
+实时界面相结合：
+
+```python
+from node import track
+
+@flow.node()
+def consume(items):
+    total = 0
+    for x in track(items, description="Processing", total=len(items)):
+        total += x
+    return total
+```
+
+运行时，进度条会显示在对应节点的行下方，不会影响其它节点的展示。
+在进程池执行时亦可使用 ``track``，进度信息会通过主进程统一渲染，避免多进程输出冲突。
+
 
 
 

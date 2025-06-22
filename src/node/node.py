@@ -453,8 +453,22 @@ def _render_call(
     return res
 
 
-def _call_fn(fn: Callable, args: Sequence[Any], kwargs: Mapping[str, Any]) -> Any:
-    return fn(*args, **kwargs)
+def _call_fn(
+    fn: Callable,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+    node_key: str | None = None,
+) -> Any:
+    from .reporters import _track_ctx
+
+    prev = getattr(_track_ctx, "node", None)
+    if node_key is not None:
+        _track_ctx.node = node_key
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        if node_key is not None:
+            _track_ctx.node = prev
 
 
 # ----------------------------------------------------------------------
@@ -554,6 +568,16 @@ class Engine:
         pool_cls = (
             ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
         )
+        proc_q = None
+        pool_kwargs: Dict[str, Any] = {"max_workers": self.workers}
+        if self.executor == "process":
+            from multiprocessing import Queue
+            from .reporters import _set_process_queue, _worker_init
+
+            proc_q = Queue()
+            _set_process_queue(proc_q)
+            pool_kwargs["initializer"] = _worker_init
+            pool_kwargs["initargs"] = (proc_q,)
         ts = TopologicalSorter({n: n.deps for n in order})
         ts.prepare()
 
@@ -566,7 +590,7 @@ class Engine:
                 sems[node.fn] = threading.Semaphore(workers)
 
         fut_map = {}
-        with pool_cls(max_workers=self.workers) as pool:
+        with pool_cls(**pool_kwargs) as pool:
 
             def submit(node):
                 if self.executor == "thread":
@@ -586,7 +610,7 @@ class Engine:
                     kwargs = {k: self._resolve(v) for k, v in node.kwargs.items()}
                     sem = sems[node.fn]
                     sem.acquire()
-                    fut = pool.submit(_call_fn, node.fn, args, kwargs)
+                    fut = pool.submit(_call_fn, node.fn, args, kwargs, node.key)
                     fut_map[fut] = (node, start, sem, args, kwargs)
 
             for n in ts.get_ready():
@@ -604,7 +628,7 @@ class Engine:
                         try:
                             val = fut.result()
                         except (pickle.PicklingError, AttributeError):
-                            val = _call_fn(node.fn, args, kwargs)
+                            val = _call_fn(node.fn, args, kwargs, node.key)
                         self.cache.put(node.key, val)
                         if self._can_save:
                             self.cache.save_script(node)
@@ -619,6 +643,8 @@ class Engine:
                     submit(n)
 
         wall = time.perf_counter() - t0
+        if proc_q is not None:
+            _set_process_queue(None)
         self.on_node_start = orig_start
         self.on_node_end = orig_end
         if self.on_flow_end is not None:

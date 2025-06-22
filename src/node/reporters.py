@@ -7,6 +7,9 @@ import time
 import sys
 import threading
 from queue import SimpleQueue, Empty
+from multiprocessing import Queue
+from typing import Iterable, Generator, Any
+from rich.progress import Progress  # type: ignore[import]
 
 from rich.live import Live  # type: ignore[import]
 from rich.console import Group, Console  # type: ignore[import]
@@ -17,12 +20,27 @@ from rich.syntax import Syntax  # type: ignore[import]
 from .node import Node, _render_call
 from .logger import console as _console
 
+# active reporter context for track()
+_track_ctx = threading.local()
+_process_queue: Queue | None = None
+
+
+def _set_process_queue(q: Queue | None) -> None:
+    global _process_queue
+    _process_queue = q
+    setattr(_track_ctx, "proc_queue", q)
+
+
+def _worker_init(q: Queue) -> None:
+    _set_process_queue(q)
+
+
 IN_JUPYTER = "ipykernel" in sys.modules
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .node import Engine
 
-__all__ = ["RichReporter"]
+__all__ = ["RichReporter", "track"]
 
 
 class RichReporter:
@@ -85,12 +103,15 @@ class _RichReporterCtx:
         self.root = root
         self.q: SimpleQueue = SimpleQueue()
         self.running: Dict[str, tuple[str, float]] = {}
+        self.tracks: Dict[str, tuple[Progress, int, str]] = {}
         self.hits = 0
         self.hit_time = 0.0
         self.execs = 0
         self.exec_start: float | None = None
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
+        self.current_node: str | None = None
+        self.proc_queue: Queue | None = None
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -125,6 +146,7 @@ class _RichReporterCtx:
             console=self.cfg.console,
         )
         self.live.__enter__()
+        self.proc_queue = _process_queue
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._loop, daemon=True)
         self.t.start()
@@ -144,6 +166,7 @@ class _RichReporterCtx:
         self.engine.on_node_start = self.orig_start
         self.engine.on_node_end = self.orig_end
         self.engine.on_flow_end = self.orig_flow
+        _set_process_queue(None)
 
     # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
@@ -160,12 +183,22 @@ class _RichReporterCtx:
         ).highlight(call)
         label.rstrip()
         self.q.put(("start", n.key, label, time.perf_counter()))
+        _track_ctx.ctx = self
+        _track_ctx.node = n.key
+        self.current_node = n.key
 
         if self.orig_start:
             self.orig_start(n)
 
     def _end(self, n: Node, dur: float, cached: bool) -> None:
         self.q.put(("end", n.key, dur, cached))
+        if getattr(_track_ctx, "ctx", None) is self:
+            _track_ctx.ctx = None
+            _track_ctx.node = None
+        for tid, (_, _, node) in list(self.tracks.items()):
+            if node == n.key:
+                self.q.put(("track_end", tid))
+        self.current_node = None
         if self.orig_end:
             self.orig_end(n, dur, cached)
 
@@ -183,7 +216,25 @@ class _RichReporterCtx:
             time.sleep(sleep)
         self._drain()
 
+    def track(
+        self, sequence: Iterable[Any], description: str, total: int | None
+    ) -> Generator[Any, None, None]:
+        tid = f"{time.perf_counter()}-{threading.get_ident()}"
+        self.q.put(("track_start", tid, self.current_node or "", description, total))
+        count = 0
+        for item in sequence:
+            yield item
+            count += 1
+            self.q.put(("track_update", tid, count))
+        self.q.put(("track_end", tid))
+
     def _drain(self) -> None:
+        if self.proc_queue is not None:
+            while True:
+                try:
+                    self.q.put(self.proc_queue.get_nowait())
+                except Empty:
+                    break
         while True:
             try:
                 typ, *rest = self.q.get_nowait()
@@ -205,6 +256,23 @@ class _RichReporterCtx:
                     end = ts + dur
                     if self.exec_end is None or end > self.exec_end:
                         self.exec_end = end
+            elif typ == "track_start":
+                tid, node_key, desc, total = rest
+                prog = Progress(
+                    auto_refresh=False,
+                    console=self.cfg.console,
+                    refresh_per_second=self.cfg.refresh_per_second,
+                )
+                task = prog.add_task(desc, total=total)
+                self.tracks[tid] = (prog, task, node_key)
+            elif typ == "track_update":
+                tid, completed = rest
+                prog, task, _ = self.tracks.get(tid, (None, None, None))
+                if prog is not None:
+                    prog.update(task, completed=completed)
+            elif typ == "track_end":
+                tid = rest[0]
+                self.tracks.pop(tid, None)
             elif typ == "flow":
                 wall = rest[0]
                 if self.exec_start is None:
@@ -259,7 +327,50 @@ class _RichReporterCtx:
         out = [self._header(final)]
         now = time.perf_counter()
         icon = str(self.spinner.render(now))
-        for label, ts in list(self.running.values()):
+        for key, (label, ts) in list(self.running.items()):
             dur = self._format_dur(now - ts)
-            out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
+            track = next(
+                (
+                    prog.__rich__()
+                    for prog, _, node in self.tracks.values()
+                    if node == key
+                ),
+                None,
+            )
+            if track is not None:
+                out.append(
+                    Group(
+                        Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")),
+                        track,
+                    )
+                )
+            else:
+                out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
         return Group(*out)
+
+
+def track(
+    sequence: Iterable[Any],
+    description: str = "Working...",
+    *,
+    total: int | None = None,
+) -> Generator[Any, None, None]:
+    ctx = getattr(_track_ctx, "ctx", None)
+    if ctx is not None:
+        yield from ctx.track(sequence, description, total)
+        return
+    proc_q = getattr(_track_ctx, "proc_queue", _process_queue)
+    node_key = getattr(_track_ctx, "node", "")
+    if proc_q is not None and node_key:
+        tid = f"{time.perf_counter()}-{threading.get_ident()}"
+        proc_q.put(("track_start", tid, node_key, description, total))
+        count = 0
+        for item in sequence:
+            yield item
+            count += 1
+            proc_q.put(("track_update", tid, count))
+        proc_q.put(("track_end", tid))
+    else:
+        from rich.progress import track as _track
+
+        yield from _track(sequence, description=description, total=total)
