@@ -9,13 +9,21 @@ import threading
 from queue import SimpleQueue, Empty
 from multiprocessing import Queue
 from typing import Iterable, Generator, Any
-from rich.progress import Progress  # type: ignore[import]
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)  # type: ignore[import]
 
 from rich.live import Live  # type: ignore[import]
 from rich.console import Group, Console  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
+from rich.table import Table  # type: ignore[import]
 
 from .node import Node, _render_call
 from .logger import console as _console
@@ -112,6 +120,27 @@ class _RichReporterCtx:
         self.spinner = Spinner("dots")
         self.current_node: str | None = None
         self.proc_queue: Queue | None = None
+
+    def _make_progress(self) -> Progress:
+        """Return a progress instance configured for single-line display."""
+        return Progress(
+            TextColumn("{task.completed}/{task.total}"),
+            TextColumn("left:{task.remaining}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            auto_refresh=False,
+            console=self.cfg.console,
+            refresh_per_second=self.cfg.refresh_per_second,
+        )
+
+    def _get_track(self, node_key: str) -> Progress | None:
+        """Return progress object for ``node_key`` if active."""
+        for prog, _, node in self.tracks.values():
+            if node == node_key:
+                return prog
+        return None
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -258,11 +287,7 @@ class _RichReporterCtx:
                         self.exec_end = end
             elif typ == "track_start":
                 tid, node_key, desc, total = rest
-                prog = Progress(
-                    auto_refresh=False,
-                    console=self.cfg.console,
-                    refresh_per_second=self.cfg.refresh_per_second,
-                )
+                prog = self._make_progress()
                 task = prog.add_task(desc, total=total)
                 self.tracks[tid] = (prog, task, node_key)
             elif typ == "track_update":
@@ -327,25 +352,16 @@ class _RichReporterCtx:
         out = [self._header(final)]
         now = time.perf_counter()
         icon = str(self.spinner.render(now))
+        table = Table.grid(expand=True)
         for key, (label, ts) in list(self.running.items()):
             dur = self._format_dur(now - ts)
-            track = next(
-                (
-                    prog.__rich__()
-                    for prog, _, node in self.tracks.values()
-                    if node == key
-                ),
-                None,
-            )
-            if track is not None:
-                out.append(
-                    Group(
-                        Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")),
-                        track,
-                    )
-                )
+            row = Text.assemble(icon, " ", label, (f" [{dur}]", "gray50"))
+            track = self._get_track(key)
+            if track:
+                table.add_row(row, track)
             else:
-                out.append(Text.assemble(icon, " ", label, (f" [{dur}]", "gray50")))
+                table.add_row(row)
+        out.append(table)
         return Group(*out)
 
 
