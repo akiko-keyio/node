@@ -13,8 +13,6 @@ Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型�
 - **结果聚合**：`gather` 工具可将多个节点合并为一个列表返回，支持 `workers`
   参数控制聚合节点的并发度。
 - **日志模块**：`from node import logger` 即可获得预配置的 `loguru` 记录器。
-  在 Jupyter Notebook 中会自动切换为 `force_terminal` 模式，避免日志
-  输出间出现大间隔。
 
 ## 安装
 
@@ -137,12 +135,11 @@ python tutorial.py
 可以在主进程独占终端，并强制 Rich 将控制台视为真实终端：
 
 ```python
-from node import logger
+from rich.console import Console
 from node.reporters import RichReporter
 
 flow = Flow(executor="process")
-logger.console._force_terminal = True  # reuse the global console
-reporter = RichReporter(force_terminal=True)
+reporter = RichReporter(console=Console(force_terminal=True))
 flow.run(root, reporter=reporter)
 ```
 

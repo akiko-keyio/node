@@ -1,6 +1,6 @@
+from rich.console import Console
 from node.node import Flow
 from node.reporters import RichReporter, track
-from node.logger import console
 
 
 def test_track_inside_node():
@@ -14,6 +14,6 @@ def test_track_inside_node():
         return total
 
     root = loop(5)
-    reporter = RichReporter(console=console, force_terminal=True)
+    reporter = RichReporter(console=Console(force_terminal=True))
     result = flow.run(root, reporter=reporter)
     assert result == 10
