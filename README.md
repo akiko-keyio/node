@@ -10,7 +10,8 @@ Node 是一个轻量级、零依赖的 DAG 流程库，适合在脚本或小型�
 - **脚本表示**：任意节点的 `repr()` 都会生成等效的 Python 调用脚本。
 - **配置系统**：通过 `Config` 对象集中管理任务默认参数，支持从 YAML 加载。
 - **回调钩子**：`on_node_end` 与 `on_flow_end` 可用来收集统计信息。
-- **结果聚合**：`gather` 工具可将多个节点合并为一个列表返回，方便并行处理。
+- **结果聚合**：`gather` 工具可将多个节点合并为一个列表返回，支持 `workers`
+  参数控制聚合节点的并发度。
 - **日志模块**：`from node import logger` 即可获得预配置的 `loguru` 记录器。
   在 Jupyter Notebook 中会自动切换为 `force_terminal` 模式，避免日志
   输出间出现大间隔。
@@ -50,8 +51,8 @@ def train(x, y, large_df, model):
 result = flow.run(square(add(2, 3)))
 print(result)  # 25
 
-# gather 多个独立节点（也可传入列表）
-result = flow.run(gather([add(1, 2), add(3, 4)]))
+# gather 多个独立节点（也可传入列表），workers 控制聚合阶段的线程数
+result = flow.run(gather([add(1, 2), add(3, 4)], workers=2))
 print(result)  # [3, 7]
 ```
 

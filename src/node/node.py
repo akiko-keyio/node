@@ -774,13 +774,14 @@ class Flow:
             _render_cache.clear()
 
 
-def gather(*nodes: Node | Iterable[Node]) -> Node:
+def gather(*nodes: Node | Iterable[Node], workers: int | None = None) -> Node:
     """Aggregate multiple nodes into a single list result.
 
     ``nodes`` may be passed either as positional arguments or as a single
     iterable.  All input nodes must belong to the same :class:`Flow`. The
     returned node produces a list of each input node's value in the provided
-    order.
+    order.  ``workers`` controls the concurrent executions of the gather
+    node itself.
     """
 
     if len(nodes) == 1 and not isinstance(nodes[0], Node):
@@ -795,7 +796,7 @@ def gather(*nodes: Node | Iterable[Node]) -> Node:
     if any(n.flow is not flow for n in nodes_list):
         raise ValueError("nodes belong to different Flow instances")
 
-    @flow.node()
+    @flow.node(workers=workers)
     def _gather(*items):
         return list(items)
 

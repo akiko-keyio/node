@@ -34,3 +34,14 @@ def test_gather_flow_mismatch(flow_factory):
 
     with pytest.raises(ValueError):
         gather(a(1), b(2))
+
+
+def test_gather_custom_workers(flow_factory):
+    flow = flow_factory()
+
+    @flow.node()
+    def inc(x):
+        return x + 1
+
+    node = gather(inc(1), workers=3)
+    assert node.fn._node_workers == 3
