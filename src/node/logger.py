@@ -1,6 +1,7 @@
 """Pre-configured Loguru logger with Rich output."""
 
 from loguru import logger
+import sys
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.traceback import install
@@ -25,6 +26,9 @@ logger.add(
     level="DEBUG",
     format="{message}",
 )
+
+# ensure future `from loguru import logger` returns this configured instance
+sys.modules["loguru"].logger = logger  # type: ignore[attr-defined]
 
 __all__ = ["logger", "console"]
 
