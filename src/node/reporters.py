@@ -83,13 +83,12 @@ class RichReporter:
 
         self.refresh_per_second = refresh_per_second
         self.show_script_line = show_script_line
-        if console is None:
-            if force_terminal:
-                self.console = Console(force_terminal=True)
-            else:
-                self.console = _console
-        else:
-            self.console = console
+        self.console = console or _console
+        if force_terminal:
+            # Rich stores the flag on a private attribute; mutate in place to
+            # avoid creating additional consoles and keep output unified.
+            if hasattr(self.console, "_force_terminal"):
+                self.console._force_terminal = True
 
     def attach(self, engine: "Engine", root: Node):
         """Return a context manager bound to ``engine`` and ``root``.
@@ -395,4 +394,6 @@ def track(
     else:
         from rich.progress import track as _track
 
-        yield from _track(sequence, description=description, total=total)
+        yield from _track(
+            sequence, description=description, total=total, console=_console
+        )
