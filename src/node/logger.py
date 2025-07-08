@@ -9,7 +9,7 @@ from rich.traceback import install
 # beautify tracebacks with Rich
 install()
 
-console = Console()
+console = Console(force_terminal="ipykernel" in sys.modules)
 
 # remove default handler
 logger.remove()
