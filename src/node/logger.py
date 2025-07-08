@@ -1,8 +1,4 @@
-"""Pre-configured Loguru logger with Rich output.
-
-When running in Jupyter, ``RichHandler`` will send raw text to stdout
-instead of emitting independent HTML blocks.
-"""
+"""Pre-configured Loguru logger with Rich output."""
 
 from loguru import logger
 import sys
@@ -13,8 +9,7 @@ from rich.traceback import install
 # beautify tracebacks with Rich
 install()
 
-IN_JUPYTER = "ipykernel" in sys.modules
-console = Console(force_terminal=IN_JUPYTER)
+console = Console()
 
 # remove default handler
 logger.remove()
