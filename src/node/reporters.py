@@ -316,11 +316,12 @@ class _RichReporterCtx:
     def _header(self, final: bool) -> Text:
         exec_time = 0.0
         if self.exec_start is not None:
-            end = (
-                self.exec_end
-                if final and self.exec_end is not None
-                else time.perf_counter()
-            )
+            if self.exec_end is not None:
+                end = self.exec_end
+            elif final:
+                end = time.perf_counter()
+            else:
+                end = self.exec_start
             exec_time = end - self.exec_start
         done = self.hits + self.execs
         remain = self.total - done - len(self.running)
