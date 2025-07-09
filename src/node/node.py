@@ -551,6 +551,14 @@ class Engine:
         t0 = time.perf_counter()
         order = root.order
 
+        if self.workers <= 1:
+            for node in order:
+                self._eval_node(node)
+            wall = time.perf_counter() - t0
+            if self.on_flow_end is not None:
+                self.on_flow_end(root, wall, self._exec_count)
+            return self.cache.get(root.key)[1]
+
         orig_start = self.on_node_start
         orig_end = self.on_node_end
 

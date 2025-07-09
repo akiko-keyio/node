@@ -339,6 +339,36 @@ def test_node_worker_limit(flow_factory):
     assert elapsed >= 0.4
 
 
+def test_single_worker_no_pool(flow_factory, monkeypatch):
+    import node.node as node_module
+    import time
+
+    called = False
+
+    def fail_pool(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("ThreadPoolExecutor should not be used")
+
+    monkeypatch.setattr(node_module, "ThreadPoolExecutor", fail_pool)
+
+    flow = flow_factory(executor="thread", default_workers=1)
+
+    @flow.node()
+    def slow(v):
+        import time
+
+        time.sleep(0.05)
+        return v
+
+    root = slow(1)
+    t0 = time.perf_counter()
+    assert flow.run(root) == 1
+    elapsed = time.perf_counter() - t0
+    assert elapsed >= 0.05
+    assert not called
+
+
 def test_cycle_detection():
     """Creating a node that depends on itself should raise."""
 
