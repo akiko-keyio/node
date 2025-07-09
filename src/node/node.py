@@ -14,10 +14,10 @@ from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
-    ProcessPoolExecutor,
     ThreadPoolExecutor,
     wait,
 )
+from loky import ProcessPoolExecutor
 from contextlib import nullcontext, suppress
 from graphlib import TopologicalSorter
 from pathlib import Path
