@@ -361,8 +361,10 @@ class Node:
     def signature(self) -> str:
         return "\n".join(line for _, line in self.lines)
 
+
     def get(self):
         return self._require_flow().run(self, cache_root=self.cache)
+
 
     def delete_cache(self) -> None:
         self.delete()
@@ -541,8 +543,10 @@ class Engine:
         self._exec_count = 0
 
         t0 = time.perf_counter()
+
         use_cache = cache_root and root.cache
         hit, val = self.cache.get(root.key) if use_cache else (False, None)
+
         if hit:
             if self.on_node_start is not None:
                 self.on_node_start(root)
@@ -570,11 +574,13 @@ class Engine:
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count)
             result = self.cache.get(root.key)[1]
+
             if not (cache_root and root.cache):
                 self.cache.delete(root.key)
             for n in order:
                 if not n.cache and n is not root:
                     self.cache.delete(n.key)
+
             return result
 
         orig_start = self.on_node_start
@@ -676,11 +682,13 @@ class Engine:
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count)
         result = self.cache.get(root.key)[1]
+
         if not (cache_root and root.cache):
             self.cache.delete(root.key)
         for n in order:
             if not n.cache and n is not root:
                 self.cache.delete(n.key)
+
         return result
 
 
