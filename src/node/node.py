@@ -551,7 +551,15 @@ class Engine:
         t0 = time.perf_counter()
         order = root.order
 
-        if self.workers <= 1:
+        max_node_workers = 1
+        for node in order:
+            workers = getattr(node.fn, "_node_workers", 1)
+            if workers == -1:
+                workers = os.cpu_count() or 1
+            if workers > max_node_workers:
+                max_node_workers = workers
+
+        if min(self.workers, max_node_workers) <= 1:
             for node in order:
                 self._eval_node(node)
             wall = time.perf_counter() - t0
