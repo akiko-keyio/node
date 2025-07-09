@@ -94,6 +94,25 @@ def test_create_overwrites_cache(flow_factory):
     assert calls == [1, 1]
 
 
+def test_get_no_cache(flow_factory):
+    flow = flow_factory()
+    calls = []
+
+    @flow.node(cache=False)
+    def inc(x):
+        calls.append(x)
+        return x + 1
+
+    node = inc(2)
+
+    assert node.get() == 3
+    assert calls == [2]
+    assert node.get() == 3
+    assert calls == [2, 2]
+    assert node.get() == 3
+    assert calls == [2, 2, 2]
+
+
 def test_defaults_override(flow_factory):
     conf = Config({"add": {"y": 5}})
     flow = flow_factory(config=conf)
@@ -339,7 +358,6 @@ def test_node_worker_limit(flow_factory):
     assert elapsed >= 0.4
 
 
-
 @pytest.mark.parametrize("dw,nw", [(1, None), (2, 1)])
 def test_no_thread_pool_for_single_worker(flow_factory, monkeypatch, dw, nw):
     import node.node as node_module
@@ -352,7 +370,6 @@ def test_no_thread_pool_for_single_worker(flow_factory, monkeypatch, dw, nw):
         raise AssertionError("ThreadPoolExecutor should not be used")
 
     monkeypatch.setattr(node_module, "ThreadPoolExecutor", fail_pool)
-
 
     flow = flow_factory(executor="thread", default_workers=dw)
 
