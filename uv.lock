@@ -120,10 +120,13 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools" },
+    { name = "cloudpickle" },
     { name = "filelock" },
     { name = "joblib" },
     { name = "loguru" },
     { name = "loky" },
+    { name = "markdown-it-py" },
+    { name = "mdurl" },
     { name = "pytest" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -132,10 +135,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools", specifier = ">=6.0.0" },
+    { name = "cloudpickle", specifier = ">=3.1.1" },
     { name = "filelock", specifier = ">=3.18.0" },
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "loky", specifier = ">=3.5.5" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
+    { name = "mdurl", specifier = ">=0.1.2" },
     { name = "pytest", specifier = ">=8.4.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rich", specifier = ">=14.0.0" },
