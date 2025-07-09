@@ -339,6 +339,29 @@ def test_node_worker_limit(flow_factory):
     assert elapsed >= 0.4
 
 
+@pytest.mark.parametrize("dw,nw", [(1, None), (2, 1)])
+def test_no_thread_pool_for_single_worker(flow_factory, monkeypatch, dw, nw):
+    import node.node as node_module
+
+    called = False
+
+    def fail_pool(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("ThreadPoolExecutor should not be used")
+
+    monkeypatch.setattr(node_module, "ThreadPoolExecutor", fail_pool)
+
+    flow = flow_factory(executor="thread", default_workers=dw)
+
+    @flow.node(workers=nw)
+    def slow(v):
+        return v
+
+    assert flow.run(slow(1)) == 1
+    assert not called
+
+
 def test_cycle_detection():
     """Creating a node that depends on itself should raise."""
 
