@@ -358,8 +358,9 @@ class Node:
     def signature(self) -> str:
         return "\n".join(line for _, line in self.lines)
 
-    def get(self):
-        return self._require_flow().run(self)
+    def get(self, *, cache: bool = True):
+        """Return the node value, optionally bypassing cache for this node."""
+        return self._require_flow().run(self, cache_root=cache)
 
     def delete_cache(self) -> None:
         self.delete()
@@ -534,11 +535,11 @@ class Engine:
         return val
 
     # ------------------------------------------------------------------
-    def run(self, root: Node):
+    def run(self, root: Node, *, cache_root: bool = True):
         self._exec_count = 0
 
         t0 = time.perf_counter()
-        hit, val = self.cache.get(root.key)
+        hit, val = self.cache.get(root.key) if cache_root else (False, None)
         if hit:
             if self.on_node_start is not None:
                 self.on_node_start(root)
@@ -565,7 +566,10 @@ class Engine:
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count)
-            return self.cache.get(root.key)[1]
+            result = self.cache.get(root.key)[1]
+            if not cache_root:
+                self.cache.delete(root.key)
+            return result
 
         orig_start = self.on_node_start
         orig_end = self.on_node_end
@@ -665,7 +669,10 @@ class Engine:
         self.on_node_end = orig_end
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count)
-        return self.cache.get(root.key)[1]
+        result = self.cache.get(root.key)[1]
+        if not cache_root:
+            self.cache.delete(root.key)
+        return result
 
 
 # ----------------------------------------------------------------------
@@ -744,7 +751,7 @@ class Flow:
 
     task = node
 
-    def run(self, root: Node, *, reporter=None):
+    def run(self, root: Node, *, reporter=None, cache_root: bool = True):
         """Run the DAG rooted at ``root``.
 
         If ``reporter`` is provided, it should be an object with an
@@ -756,9 +763,9 @@ class Flow:
         if reporter is None:
             reporter = self.reporter
         if reporter is None:
-            return self.engine.run(root)
+            return self.engine.run(root, cache_root=cache_root)
         with reporter.attach(self.engine, root):
-            return self.engine.run(root)
+            return self.engine.run(root, cache_root=cache_root)
 
     def generate(self, root: Node) -> None:
         """Compute and cache ``root`` without returning the value."""
