@@ -242,6 +242,7 @@ class Node:
         "kwargs",
         "deps",
         "flow",
+        "cache",
         "_hash",
         "_raw",
         "_lock",
@@ -265,11 +266,13 @@ class Node:
         kwargs: Dict | None = None,
         *,
         flow: "Flow" | None = None,
+        cache: bool = True,
     ):
         self.fn = fn
         self.args = tuple(args)
         self.kwargs = kwargs or {}
         self.flow = flow
+        self.cache = cache
 
         self.deps: List[Node] = [
             *(a for a in self.args if isinstance(a, Node)),
@@ -358,9 +361,10 @@ class Node:
     def signature(self) -> str:
         return "\n".join(line for _, line in self.lines)
 
-    def get(self, *, cache: bool = True):
-        """Return the node value, optionally bypassing cache for this node."""
-        return self._require_flow().run(self, cache_root=cache)
+
+    def get(self):
+        return self._require_flow().run(self, cache_root=self.cache)
+
 
     def delete_cache(self) -> None:
         self.delete()
@@ -510,7 +514,7 @@ class Engine:
         start = time.perf_counter()
         if self.on_node_start is not None:
             self.on_node_start(n)
-        hit, val = self.cache.get(n.key)
+        hit, val = self.cache.get(n.key) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
             if self.on_node_end is not None:
@@ -539,7 +543,10 @@ class Engine:
         self._exec_count = 0
 
         t0 = time.perf_counter()
-        hit, val = self.cache.get(root.key) if cache_root else (False, None)
+
+        use_cache = cache_root and root.cache
+        hit, val = self.cache.get(root.key) if use_cache else (False, None)
+
         if hit:
             if self.on_node_start is not None:
                 self.on_node_start(root)
@@ -567,8 +574,13 @@ class Engine:
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count)
             result = self.cache.get(root.key)[1]
-            if not cache_root:
+
+            if not (cache_root and root.cache):
                 self.cache.delete(root.key)
+            for n in order:
+                if not n.cache and n is not root:
+                    self.cache.delete(n.key)
+
             return result
 
         orig_start = self.on_node_start
@@ -620,7 +632,7 @@ class Engine:
                     start = time.perf_counter()
                     if self.on_node_start:
                         self.on_node_start(node)
-                    hit, val = self.cache.get(node.key)
+                    hit, val = self.cache.get(node.key) if node.cache else (False, None)
                     if hit:
                         if self.on_node_end:
                             self.on_node_end(node, time.perf_counter() - start, True)
@@ -670,8 +682,13 @@ class Engine:
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count)
         result = self.cache.get(root.key)[1]
-        if not cache_root:
+
+        if not (cache_root and root.cache):
             self.cache.delete(root.key)
+        for n in order:
+            if not n.cache and n is not root:
+                self.cache.delete(n.key)
+
         return result
 
 
@@ -715,7 +732,11 @@ class Flow:
             self.reporter = reporter
 
     def node(
-        self, *, ignore: Sequence[str] | None = None, workers: int | None = None
+        self,
+        *,
+        ignore: Sequence[str] | None = None,
+        workers: int | None = None,
+        cache: bool = True,
     ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
         ignore_set = set(ignore or [])
 
@@ -737,7 +758,7 @@ class Flow:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(fn, bound.args, bound.kwargs, flow=self)
+                node = Node(fn, bound.args, bound.kwargs, flow=self, cache=cache)
                 cached = self._registry.get(node)
                 if cached is not None:
                     return cached

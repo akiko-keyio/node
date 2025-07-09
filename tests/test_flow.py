@@ -98,16 +98,18 @@ def test_get_no_cache(flow_factory):
     flow = flow_factory()
     calls = []
 
-    @flow.node()
+    @flow.node(cache=False)
+
     def inc(x):
         calls.append(x)
         return x + 1
 
     node = inc(2)
 
-    assert node.get(cache=False) == 3
+
+    assert node.get() == 3
     assert calls == [2]
-    assert node.get(cache=False) == 3
+    assert node.get() == 3
     assert calls == [2, 2]
 
     assert node.get() == 3
