@@ -99,13 +99,11 @@ def test_get_no_cache(flow_factory):
     calls = []
 
     @flow.node(cache=False)
-
     def inc(x):
         calls.append(x)
         return x + 1
 
     node = inc(2)
-
 
     assert node.get() == 3
     assert calls == [2]
@@ -383,6 +381,26 @@ def test_no_thread_pool_for_single_worker(flow_factory, monkeypatch, dw, nw):
     assert flow.run(slow(1)) == 1
 
     assert not called
+
+
+def test_local_node_runs_in_main_thread(flow_factory):
+    flow = flow_factory(executor="thread", default_workers=2)
+
+    @flow.node(local=True)
+    def which_thread() -> str:
+        import threading
+
+        return threading.current_thread().name
+
+    @flow.node()
+    def wrapper(v: str) -> tuple[str, str]:
+        import threading
+
+        return threading.current_thread().name, v
+
+    name, inner = flow.run(wrapper(which_thread()))
+    assert inner == "MainThread"
+    assert name != "MainThread"
 
 
 def test_cycle_detection():

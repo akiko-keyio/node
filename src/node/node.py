@@ -361,10 +361,8 @@ class Node:
     def signature(self) -> str:
         return "\n".join(line for _, line in self.lines)
 
-
     def get(self):
         return self._require_flow().run(self, cache_root=self.cache)
-
 
     def delete_cache(self) -> None:
         self.delete()
@@ -625,6 +623,12 @@ class Engine:
         with pool_cls(**pool_kwargs) as pool:
 
             def submit(node):
+                if getattr(node.fn, "_node_local", False):
+                    self._eval_node(node)
+                    ts.done(node)
+                    for ready in ts.get_ready():
+                        submit(ready)
+                    return
                 if self.executor == "thread":
                     sem = sems[node.fn]
                     fut_map[pool.submit(self._eval_node, node, sem)] = node
@@ -737,7 +741,22 @@ class Flow:
         ignore: Sequence[str] | None = None,
         workers: int | None = None,
         cache: bool = True,
+        local: bool = False,
     ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
+        """Decorate ``fn`` into a :class:`Node`.
+
+        Parameters
+        ----------
+        ignore:
+            Argument names excluded from the cache key.
+        workers:
+            Maximum concurrency for this function. ``-1`` uses all cores.
+        cache:
+            Whether to cache the result.
+        local:
+            Execute directly in the caller thread, bypassing any executor.
+        """
+
         ignore_set = set(ignore or [])
 
         def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
@@ -749,6 +768,7 @@ class Flow:
                 "_node_workers",
                 workers if workers is not None else self.default_workers,
             )
+            setattr(fn, "_node_local", local)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
