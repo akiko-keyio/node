@@ -27,6 +27,7 @@ from weakref import WeakValueDictionary
 import joblib  # type: ignore[import]
 from cachetools import LRUCache  # type: ignore[import]
 from filelock import FileLock  # type: ignore[import]
+from .logger import logger
 
 __all__ = [
     "Cache",
@@ -361,10 +362,8 @@ class Node:
     def signature(self) -> str:
         return "\n".join(line for _, line in self.lines)
 
-
     def get(self):
         return self._require_flow().run(self, cache_root=self.cache)
-
 
     def delete_cache(self) -> None:
         self.delete()
@@ -489,6 +488,7 @@ class Engine:
         on_node_start: Callable[[Node], None] | None = None,
         on_node_end: Callable[[Node, float, bool], None] | None = None,
         on_flow_end: Callable[[Node, float, int], None] | None = None,
+        continue_on_error: bool = False,
     ):
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
         self.executor = executor
@@ -496,6 +496,7 @@ class Engine:
         self.on_node_start = on_node_start
         self.on_node_end = on_node_end
         self.on_flow_end = on_flow_end
+        self.continue_on_error = continue_on_error
         self._can_save = hasattr(self.cache, "save_script")
 
         self._exec_count = 0
@@ -525,10 +526,20 @@ class Engine:
 
         args = [self._resolve(a) for a in n.args]
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
-        val = n.fn(*args, **kwargs)
-        self.cache.put(n.key, val)
-        if self._can_save:
-            self.cache.save_script(n)
+        try:
+            val = n.fn(*args, **kwargs)
+        except Exception:  # pragma: no cover - exercised via tests
+            if self.continue_on_error:
+                logger.error("node %s failed", n.key, exc_info=True)
+                val = None
+            else:
+                if sem is not None:
+                    sem.release()
+                raise
+        else:
+            self.cache.put(n.key, val)
+            if self._can_save:
+                self.cache.save_script(n)
         dur = time.perf_counter() - start
         if self.on_node_end is not None:
             self.on_node_end(n, dur, False)
@@ -661,9 +672,17 @@ class Engine:
                             val = fut.result()
                         except (pickle.PicklingError, AttributeError):
                             val = _call_fn(node.fn, args, kwargs, node.key)
-                        self.cache.put(node.key, val)
-                        if self._can_save:
-                            self.cache.save_script(node)
+                        except Exception:
+                            if self.continue_on_error:
+                                logger.error("node %s failed", node.key, exc_info=True)
+                                val = None
+                            else:
+                                sem.release()
+                                raise
+                        else:
+                            self.cache.put(node.key, val)
+                            if self._can_save:
+                                self.cache.save_script(node)
                         dur = time.perf_counter() - start
                         if self.on_node_end is not None:
                             self.on_node_end(node, dur, False)
@@ -712,6 +731,7 @@ class Flow:
         executor: str = "thread",
         default_workers: int = 1,
         reporter: Optional[Any] = None,
+        continue_on_error: bool = False,
     ):
         self.config = config or Config()
         self.default_workers = default_workers
@@ -719,6 +739,7 @@ class Flow:
             cache=cache,
             executor=executor,
             workers=default_workers,
+            continue_on_error=continue_on_error,
         )
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
         if reporter is None:
