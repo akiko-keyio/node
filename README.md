@@ -106,23 +106,21 @@ flow = Flow(
 使用 `Config` 管理任务默认参数：
 
 ```python
-import yaml
 from node.node import Flow, Config
 
-with open("defaults.yml") as f:
-    defaults = yaml.safe_load(f)
-
-flow = Flow(config=Config(defaults))
+flow = Flow(config=Config("defaults.yml"))
 ```
 
 示例 `defaults.yml`：
 
 ```yaml
+base:
+  val: 5
 add:
-  y: 5
+  y: ${base.val}
 ```
 
-测试目录中的 `tests/config.yaml` 亦可参考。
+测试目录中的 `tests/config.yaml` 亦可参考，该文件演示了配置引用。
 
 ## 教程脚本
 

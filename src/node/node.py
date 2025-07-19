@@ -22,6 +22,7 @@ from contextlib import nullcontext, suppress
 from graphlib import TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from omegaconf import DictConfig, OmegaConf
 from weakref import WeakValueDictionary
 
 import joblib  # type: ignore[import]
@@ -720,12 +721,30 @@ class Engine:
 # ----------------------------------------------------------------------
 # public Flow facade
 # ----------------------------------------------------------------------
-class Config:
-    def __init__(self, mapping: Mapping[str, Dict[str, Any]] | None = None):
-        self._m = dict(mapping or {})
 
-    def defaults(self, fn_name: str):
-        return self._m.get(fn_name, {})
+
+class Config:
+    """Store default arguments for tasks using OmegaConf."""
+
+    def __init__(
+        self,
+        mapping: Mapping[str, Dict[str, Any]] | DictConfig | str | Path | None = None,
+    ) -> None:
+        if isinstance(mapping, (str, Path)):
+            self._conf: DictConfig = OmegaConf.load(str(mapping))
+        else:
+            self._conf = OmegaConf.create(mapping or {})
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "Config":
+        """Create Config from a YAML file."""
+        return cls(OmegaConf.load(str(path)))
+
+    def defaults(self, fn_name: str) -> Dict[str, Any]:
+        node_cfg = self._conf.get(fn_name)
+        if node_cfg is None:
+            return {}
+        return cast(Dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
 
 
 class Flow:
