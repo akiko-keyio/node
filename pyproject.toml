@@ -18,6 +18,7 @@ dependencies = [
     "markdown-it-py>=3.0.0",
     "mdurl>=0.1.2",
     "omegaconf>=2.3.0",
+    "pydantic<2",
     "pytest>=8.4.0",
     "pytest-cov>=6.2.1",
     "pyyaml>=6.0.2",

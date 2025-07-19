@@ -23,6 +23,7 @@ from graphlib import TopologicalSorter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from omegaconf import DictConfig, OmegaConf
+from pydantic import validate_arguments
 from weakref import WeakValueDictionary
 
 import joblib  # type: ignore[import]
@@ -848,6 +849,7 @@ class Flow:
         default_workers: int = 1,
         reporter: Optional[Any] = None,
         continue_on_error: bool = False,
+        validate: bool = False,
     ):
         self.config = config or Config()
         self.default_workers = default_workers
@@ -857,6 +859,7 @@ class Flow:
             workers=default_workers,
             continue_on_error=continue_on_error,
         )
+        self.validate = validate
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
         if reporter is None:
             try:  # defer import to avoid cycle
@@ -902,6 +905,11 @@ class Flow:
                 workers if workers is not None else self.default_workers,
             )
             setattr(fn, "_node_local", local)
+            wrapped = validate_arguments(fn) if self.validate else fn
+            setattr(wrapped, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
+            setattr(wrapped, "_node_sig", sig_obj)
+            setattr(wrapped, "_node_workers", getattr(fn, "_node_workers"))
+            setattr(wrapped, "_node_local", getattr(fn, "_node_local"))
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
@@ -911,7 +919,12 @@ class Flow:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(fn, bound.args, bound.kwargs, flow=self, cache=cache)
+                if self.validate:
+                    model = wrapped.vd.init_model_instance(*bound.args, **bound.kwargs)
+                    for name in bound.arguments:
+                        bound.arguments[name] = getattr(model, name)
+
+                node = Node(wrapped, bound.args, bound.kwargs, flow=self, cache=cache)
                 cached = self._registry.get(node)
                 if cached is not None:
                     return cached
