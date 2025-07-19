@@ -849,7 +849,8 @@ class Flow:
         continue_on_error: bool = True,
         validate: bool = True,
     ):
-        self.config = config or Config()
+        self.config = config if isinstance(config, Config) else Config(config)
+        self._initial_config = Config(OmegaConf.create(self.config._conf))
         self.default_workers = default_workers
         self.engine = Engine(
             cache=cache,
@@ -868,6 +869,10 @@ class Flow:
                 self.reporter = _RR()
         else:
             self.reporter = reporter
+
+    def reset_config(self) -> None:
+        """Restore the configuration used at initialization."""
+        self.config = Config(OmegaConf.create(self._initial_config._conf))
 
     def node(
         self,

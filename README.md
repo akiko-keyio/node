@@ -120,6 +120,14 @@ add:
   y: ${base.val}
 ```
 
+配置加载后，可直接访问内部配置并在运行时修改，再用 `flow.reset_config()` 恢复最初的参数：
+
+```python
+cfg = flow.config._conf
+cfg.add.y = 3
+flow.reset_config()
+```
+
 测试目录中的 `tests/config.yaml` 亦可参考，该文件演示了配置引用。
 
 ## 教程脚本
