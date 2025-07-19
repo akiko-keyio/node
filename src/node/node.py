@@ -777,11 +777,24 @@ class Config:
     def __init__(
         self,
         mapping: Mapping[str, Dict[str, Any]] | DictConfig | str | Path | None = None,
+        *,
+        cache_nodes: bool = False,
     ) -> None:
+        """Create a configuration mapping.
+
+        Parameters
+        ----------
+        mapping:
+            Initial configuration data.
+        cache_nodes:
+            When ``True`` reuse nodes built from this config to avoid repeated
+            instantiation. Defaults to ``False``.
+        """
         if isinstance(mapping, (str, Path)):
             self._conf: DictConfig = OmegaConf.load(str(mapping))
         else:
             self._conf = OmegaConf.create(mapping or {})
+        self._cache_nodes = cache_nodes
         self._nodes: Dict[str, "Node"] = {}
 
     @classmethod
@@ -805,7 +818,7 @@ class Config:
         return val
 
     def _build_node(self, name: str, flow: "Flow") -> "Node":
-        if name in self._nodes:
+        if self._cache_nodes and name in self._nodes:
             return self._nodes[name]
         cfg = self._conf[name]
         target = cfg.get("_target_", name)
@@ -820,7 +833,8 @@ class Config:
             if k != "_target_"
         }
         node = fn(**params)
-        self._nodes[name] = node
+        if self._cache_nodes:
+            self._nodes[name] = node
         return node
 
     def defaults(self, fn_name: str, *, flow: "Flow" | None = None) -> Dict[str, Any]:
@@ -850,7 +864,10 @@ class Flow:
         validate: bool = True,
     ):
         self.config = config if isinstance(config, Config) else Config(config)
-        self._initial_config = Config(OmegaConf.create(self.config._conf))
+        self._initial_config = Config(
+            OmegaConf.create(self.config._conf),
+            cache_nodes=self.config._cache_nodes,
+        )
         self.default_workers = default_workers
         self.engine = Engine(
             cache=cache,
@@ -872,7 +889,10 @@ class Flow:
 
     def reset_config(self) -> None:
         """Restore the configuration used at initialization."""
-        self.config = Config(OmegaConf.create(self._initial_config._conf))
+        self.config = Config(
+            OmegaConf.create(self._initial_config._conf),
+            cache_nodes=self._initial_config._cache_nodes,
+        )
 
     def node(
         self,
@@ -908,7 +928,11 @@ class Flow:
                 workers if workers is not None else self.default_workers,
             )
             setattr(fn, "_node_local", local)
-            wrapped = validate_arguments(fn) if self.validate else fn
+            wrapped = (
+                validate_arguments(fn, config={"arbitrary_types_allowed": True})
+                if self.validate
+                else fn
+            )
             setattr(wrapped, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
             setattr(wrapped, "_node_sig", sig_obj)
             setattr(wrapped, "_node_workers", getattr(fn, "_node_workers"))
@@ -921,14 +945,6 @@ class Flow:
                     if name not in bound.arguments:
                         bound.arguments[name] = val
                 bound.apply_defaults()
-
-                if self.validate:
-                    model = getattr(wrapped, "vd").init_model_instance(
-                        *bound.args,
-                        **bound.kwargs,
-                    )
-                    for name in bound.arguments:
-                        bound.arguments[name] = getattr(model, name)
 
                 node = Node(wrapped, bound.args, bound.kwargs, flow=self, cache=cache)
                 cached = self._registry.get(node)
