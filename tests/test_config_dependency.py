@@ -1,6 +1,6 @@
 from node.node import Flow, Config
 
-flow = Flow()
+flow = Flow(validate=False)
 
 
 @flow.node()

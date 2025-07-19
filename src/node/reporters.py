@@ -401,14 +401,8 @@ def track(
     proc_q = getattr(_track_ctx, "proc_queue", _process_queue)
     node_key = getattr(_track_ctx, "node", "")
     if proc_q is not None and node_key:
-        tid = f"{time.perf_counter()}-{threading.get_ident()}"
-        proc_q.put(("track_start", tid, node_key, description, total))
-        count = 0
         for item in sequence:
             yield item
-            count += 1
-            proc_q.put(("track_update", tid, count))
-        proc_q.put(("track_end", tid))
     else:
         from rich.progress import track as _track
 

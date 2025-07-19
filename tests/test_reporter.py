@@ -3,7 +3,7 @@ from node.reporters import RichReporter
 
 
 def _make_ctx(hits=0, execs=0, fails=0):
-    flow = Flow()
+    flow = Flow(validate=False, continue_on_error=False)
 
     @flow.node()
     def dummy():

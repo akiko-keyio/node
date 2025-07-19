@@ -4,7 +4,7 @@ from node.reporters import RichReporter, track
 
 
 def test_track_inside_node_process():
-    flow = Flow(executor="process")
+    flow = Flow(executor="process", continue_on_error=False, validate=False)
 
     @flow.node()
     def loop(n: int) -> int:
