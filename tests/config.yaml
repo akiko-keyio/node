@@ -1,2 +1,4 @@
+base:
+  val: 5
 add:
-  y: 5
+  y: ${base.val}

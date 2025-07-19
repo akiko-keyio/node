@@ -2,9 +2,8 @@ from pathlib import Path
 from contextlib import nullcontext
 import threading
 
-import yaml  # type: ignore[import]
-import pytest
 from node.node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
+import pytest
 
 
 def test_flow_example(flow_factory):
@@ -140,10 +139,7 @@ def test_positional_args_ignore_config(flow_factory):
 
 def test_config_from_yaml(flow_factory):
     cfg_path = Path(__file__).with_name("config.yaml")
-    with open(cfg_path) as f:
-        defaults = yaml.safe_load(f)
-
-    flow = flow_factory(config=Config(defaults))
+    flow = flow_factory(config=Config(cfg_path))
 
     @flow.node()
     def add(x, y=1):
