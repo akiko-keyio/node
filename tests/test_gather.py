@@ -45,3 +45,14 @@ def test_gather_custom_workers(flow_factory):
 
     node = gather(inc(1), workers=3)
     assert node.fn._node_workers == 3
+
+
+def test_gather_cache_toggle(flow_factory):
+    flow = flow_factory()
+
+    @flow.node()
+    def inc(x):
+        return x + 1
+
+    node = gather(inc(1), cache=False)
+    assert node.cache is False
