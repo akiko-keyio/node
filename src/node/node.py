@@ -793,8 +793,10 @@ class Config:
     def _resolve_value(self, val: Any, flow: "Flow") -> Any:
         if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
             key = val[2:-1]
-            if key in self._conf and "_target_" in self._conf[key]:
-                return self._build_node(key, flow)
+            if key in self._conf:
+                cfg_val = self._conf[key]
+                if OmegaConf.is_dict(cfg_val) and "_target_" in cfg_val:
+                    return self._build_node(key, flow)
             return OmegaConf.select(self._conf, key)
         return val
 
