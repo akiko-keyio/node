@@ -548,7 +548,7 @@ class Engine:
             val = n.fn(*args, **kwargs)
         except Exception as e:  # pragma: no cover - exercised via tests
             if self.continue_on_error:
-                logger.error("node %s failed for %s", n.key, e, exc_info=True)
+                logger.error(f"node {n.key} failed for {e}", exc_info=True)
                 self._failed.add(n.key)
                 dur = time.perf_counter() - start
                 if self.on_node_end is not None:
@@ -714,9 +714,7 @@ class Engine:
                         except Exception as e:
                             if self.continue_on_error:
                                 logger.error(
-                                    "node %s failed for %s",
-                                    node.key,
-                                    e,
+                                    f"node {node.key} failed for {e}",
                                     exc_info=True,
                                 )
                                 self._failed.add(node.key)
@@ -846,10 +844,10 @@ class Flow:
         config: Config | None = None,
         cache: Cache | None = None,
         executor: str = "thread",
-        default_workers: int = 1,
+        default_workers: int = 4,
         reporter: Optional[Any] = None,
-        continue_on_error: bool = False,
-        validate: bool = False,
+        continue_on_error: bool = True,
+        validate: bool = True,
     ):
         self.config = config or Config()
         self.default_workers = default_workers
@@ -920,7 +918,10 @@ class Flow:
                 bound.apply_defaults()
 
                 if self.validate:
-                    model = wrapped.vd.init_model_instance(*bound.args, **bound.kwargs)
+                    model = getattr(wrapped, "vd").init_model_instance(
+                        *bound.args,
+                        **bound.kwargs,
+                    )
                     for name in bound.arguments:
                         bound.arguments[name] = getattr(model, name)
 

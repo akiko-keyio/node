@@ -13,7 +13,12 @@ def test_process_pickling_fallback(tmp_path):
             pass
 
     disk.put = safe_put  # type: ignore[assignment]
-    flow = Flow(cache=ChainCache([MemoryLRU(), disk]), executor="process")
+    flow = Flow(
+        cache=ChainCache([MemoryLRU(), disk]),
+        executor="process",
+        continue_on_error=False,
+        validate=False,
+    )
 
     @flow.node()
     def make_fn(x):
