@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cachetools>=6.0.0",
     "cloudpickle>=3.1.1",
+    "coverage>=7.9.2",
     "filelock>=3.18.0",
     "joblib>=1.5.1",
     "loguru>=0.7.3",

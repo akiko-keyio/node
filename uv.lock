@@ -190,6 +190,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cachetools" },
     { name = "cloudpickle" },
+    { name = "coverage" },
     { name = "filelock" },
     { name = "joblib" },
     { name = "loguru" },
@@ -206,6 +207,7 @@ dependencies = [
 requires-dist = [
     { name = "cachetools", specifier = ">=6.0.0" },
     { name = "cloudpickle", specifier = ">=3.1.1" },
+    { name = "coverage", specifier = ">=7.9.2" },
     { name = "filelock", specifier = ">=3.18.0" },
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "loguru", specifier = ">=0.7.3" },

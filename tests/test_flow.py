@@ -431,11 +431,11 @@ def test_dict_canonicalization(flow_factory):
 def test_callbacks_invoked(flow_factory):
     events = []
 
-    def on_node_end(node, dur, cached):
-        events.append(("node", cached))
+    def on_node_end(node, dur, cached, failed):
+        events.append(("node", cached, failed))
 
-    def on_flow_end(root, wall, count):
-        events.append(("flow", count))
+    def on_flow_end(root, wall, count, fails):
+        events.append(("flow", count, fails))
 
     flow = flow_factory()
     flow.engine.on_node_end = on_node_end
@@ -447,11 +447,11 @@ def test_callbacks_invoked(flow_factory):
 
     node = add(1, 2)
     assert flow.run(node) == 3
-    assert events == [("node", False), ("flow", 1)]
+    assert events == [("node", False, False), ("flow", 1, 0)]
 
     events.clear()
     assert flow.run(node) == 3
-    assert events == [("node", True), ("flow", 0)]
+    assert events == [("node", True, False), ("flow", 0, 0)]
 
 
 def test_cache_scripts(flow_factory, tmp_path):

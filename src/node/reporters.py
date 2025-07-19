@@ -115,6 +115,8 @@ class _RichReporterCtx:
         self.hits = 0
         self.hit_time = 0.0
         self.execs = 0
+        self.fails = 0
+        self.fail_time = 0.0
         self.exec_start: float | None = None
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
@@ -222,8 +224,8 @@ class _RichReporterCtx:
         if self.orig_start:
             self.orig_start(n)
 
-    def _end(self, n: Node, dur: float, cached: bool) -> None:
-        self.q.put(("end", n.key, dur, cached))
+    def _end(self, n: Node, dur: float, cached: bool, failed: bool) -> None:
+        self.q.put(("end", n.key, dur, cached, failed))
         if getattr(_track_ctx, "ctx", None) is self:
             _track_ctx.ctx = None
             _track_ctx.node = None
@@ -232,12 +234,12 @@ class _RichReporterCtx:
                 self.q.put(("track_end", tid))
         self.current_node = None
         if self.orig_end:
-            self.orig_end(n, dur, cached)
+            self.orig_end(n, dur, cached, failed)
 
-    def _flow(self, root: Node, wall: float, count: int) -> None:
+    def _flow(self, root: Node, wall: float, count: int, fails: int) -> None:
         self.q.put(("flow", wall))
         if self.orig_flow:
-            self.orig_flow(root, wall, count)
+            self.orig_flow(root, wall, count, fails)
 
     # --------------------------------------------------------------
     def _loop(self) -> None:
@@ -279,9 +281,12 @@ class _RichReporterCtx:
                     self.seen.add(k)
                     self.total += 1
             elif typ == "end":
-                k, dur, cached = rest
+                k, dur, cached, failed = rest
                 label, ts = self.running.pop(k, (k, time.perf_counter()))
-                if cached:
+                if failed:
+                    self.fails += 1
+                    self.fail_time += dur
+                elif cached:
                     self.hits += 1
                     self.hit_time += dur
                 else:
@@ -324,9 +329,13 @@ class _RichReporterCtx:
             else:
                 end = self.exec_start
             exec_time = end - self.exec_start
-        done = self.hits + self.execs
+        done = self.hits + self.execs + self.fails
         remain = self.total - done - len(self.running)
-        avg = (exec_time) / self.execs if self.execs else 0.0
+        avg = (
+            (exec_time + self.fail_time) / (self.execs + self.fails)
+            if (self.execs + self.fails)
+            else 0.0
+        )
         eta = int(remain * avg)
         fmt = self._format_dur
         parts = []
@@ -344,6 +353,13 @@ class _RichReporterCtx:
                 (" Create ", "bold"),
                 (f"{int(self.execs)} ", "bold"),
                 (f"[{fmt(exec_time)}]", "gray50"),
+            ]
+        if self.fails:
+            prefix = "\t" if parts else ""
+            parts += [
+                (f"{prefix}❌"),
+                (" Fail ", "bold"),
+                (f"{self.fails} ", "bold"),
             ]
         if not final:
             prefix = "\t" if parts else ""

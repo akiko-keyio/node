@@ -2,7 +2,7 @@ from node.node import Flow
 from node.reporters import RichReporter
 
 
-def _make_ctx(hits=0, execs=0):
+def _make_ctx(hits=0, execs=0, fails=0):
     flow = Flow()
 
     @flow.node()
@@ -14,6 +14,7 @@ def _make_ctx(hits=0, execs=0):
     ctx.total = 1
     ctx.hits = hits
     ctx.execs = execs
+    ctx.fails = fails
     return ctx
 
 
@@ -36,6 +37,12 @@ def test_format_duration():
     assert ctx._format_dur(5) == "5.0s"
     assert ctx._format_dur(65) == "1m 5s"
     assert ctx._format_dur(3661) == "1h 1m 1s"
+
+
+def test_header_shows_fail():
+    ctx = _make_ctx(execs=1, fails=1)
+    header = ctx._header(final=False).plain
+    assert "❌ Fail" in header
 
 
 def test_start_uses_syntax():
