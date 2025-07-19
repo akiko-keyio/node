@@ -545,9 +545,9 @@ class Engine:
         kwargs = {k: self._resolve(v) for k, v in n.kwargs.items()}
         try:
             val = n.fn(*args, **kwargs)
-        except Exception:  # pragma: no cover - exercised via tests
+        except Exception as e:  # pragma: no cover - exercised via tests
             if self.continue_on_error:
-                logger.error("node %s failed", n.key, exc_info=True)
+                logger.error("node %s failed for %s", n.key, e, exc_info=True)
                 self._failed.add(n.key)
                 dur = time.perf_counter() - start
                 if self.on_node_end is not None:
@@ -710,9 +710,14 @@ class Engine:
                             val = fut.result()
                         except (pickle.PicklingError, AttributeError):
                             val = _call_fn(node.fn, args, kwargs, node.key)
-                        except Exception:
+                        except Exception as e:
                             if self.continue_on_error:
-                                logger.error("node %s failed", node.key, exc_info=True)
+                                logger.error(
+                                    "node %s failed for %s",
+                                    node.key,
+                                    e,
+                                    exc_info=True,
+                                )
                                 self._failed.add(node.key)
                                 dur = time.perf_counter() - start
                                 if self.on_node_end is not None:
