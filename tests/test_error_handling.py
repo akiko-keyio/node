@@ -12,5 +12,5 @@ def test_continue_on_error(flow_factory, capsys):
 
     result = flow.run(inc(fail()))
     captured = capsys.readouterr().out
-    assert result == 1
+    assert result is None
     assert "failed" in captured

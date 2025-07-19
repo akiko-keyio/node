@@ -486,8 +486,8 @@ class Engine:
         executor: str = "thread",
         workers: int | None = None,
         on_node_start: Callable[[Node], None] | None = None,
-        on_node_end: Callable[[Node, float, bool], None] | None = None,
-        on_flow_end: Callable[[Node, float, int], None] | None = None,
+        on_node_end: Callable[[Node, float, bool, bool], None] | None = None,
+        on_flow_end: Callable[[Node, float, int, int], None] | None = None,
         continue_on_error: bool = False,
     ):
         self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
@@ -500,6 +500,7 @@ class Engine:
         self._can_save = hasattr(self.cache, "save_script")
 
         self._exec_count = 0
+        self._failed: set[str] = set()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -509,17 +510,32 @@ class Engine:
             return val if hit else None
         return v
 
+    def _fail_node(
+        self, n: Node, start: float, sem: threading.Semaphore | None
+    ) -> None:
+        if self.on_node_start is not None:
+            self.on_node_start(n)
+        dur = time.perf_counter() - start
+        if self.on_node_end is not None:
+            self.on_node_end(n, dur, False, True)
+        self._failed.add(n.key)
+        if sem is not None:
+            sem.release()
+
     def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
         if sem is not None:
             sem.acquire()
         start = time.perf_counter()
+        if any(d.key in self._failed for d in n.deps):
+            self._fail_node(n, start, sem)
+            return None
         if self.on_node_start is not None:
             self.on_node_start(n)
         hit, val = self.cache.get(n.key) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
             if self.on_node_end is not None:
-                self.on_node_end(n, dur, True)
+                self.on_node_end(n, dur, True, False)
             if sem is not None:
                 sem.release()
             return val
@@ -531,7 +547,13 @@ class Engine:
         except Exception:  # pragma: no cover - exercised via tests
             if self.continue_on_error:
                 logger.error("node %s failed", n.key, exc_info=True)
-                val = None
+                self._failed.add(n.key)
+                dur = time.perf_counter() - start
+                if self.on_node_end is not None:
+                    self.on_node_end(n, dur, False, True)
+                if sem is not None:
+                    sem.release()
+                return None
             else:
                 if sem is not None:
                     sem.release()
@@ -542,7 +564,7 @@ class Engine:
                 self.cache.save_script(n)
         dur = time.perf_counter() - start
         if self.on_node_end is not None:
-            self.on_node_end(n, dur, False)
+            self.on_node_end(n, dur, False, False)
         with self._lock:
             self._exec_count += 1
         if sem is not None:
@@ -552,6 +574,7 @@ class Engine:
     # ------------------------------------------------------------------
     def run(self, root: Node, *, cache_root: bool = True):
         self._exec_count = 0
+        self._failed.clear()
 
         t0 = time.perf_counter()
 
@@ -562,9 +585,9 @@ class Engine:
             if self.on_node_start is not None:
                 self.on_node_start(root)
             if self.on_node_end is not None:
-                self.on_node_end(root, time.perf_counter() - t0, True)
+                self.on_node_end(root, time.perf_counter() - t0, True, False)
             if self.on_flow_end is not None:
-                self.on_flow_end(root, time.perf_counter() - t0, 0)
+                self.on_flow_end(root, time.perf_counter() - t0, 0, 0)
             return val
 
         t0 = time.perf_counter()
@@ -583,7 +606,7 @@ class Engine:
                 self._eval_node(node)
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
-                self.on_flow_end(root, wall, self._exec_count)
+                self.on_flow_end(root, wall, self._exec_count, len(self._failed))
             result = self.cache.get(root.key)[1]
 
             if not (cache_root and root.cache):
@@ -601,9 +624,9 @@ class Engine:
             if orig_start is not None:
                 orig_start(n)
 
-        def end_cb(n, dur, cached):
+        def end_cb(n, dur, cached, failed):
             if orig_end is not None:
-                orig_end(n, dur, cached)
+                orig_end(n, dur, cached, failed)
 
         self.on_node_start = start_cb
         self.on_node_end = end_cb
@@ -636,6 +659,12 @@ class Engine:
         with pool_cls(**pool_kwargs) as pool:
 
             def submit(node):
+                if any(d.key in self._failed for d in node.deps):
+                    self._fail_node(node, time.perf_counter(), None)
+                    ts.done(node)
+                    for ready in ts.get_ready():
+                        submit(ready)
+                    return
                 if getattr(node.fn, "_node_local", False):
                     self._eval_node(node)
                     ts.done(node)
@@ -652,7 +681,9 @@ class Engine:
                     hit, val = self.cache.get(node.key) if node.cache else (False, None)
                     if hit:
                         if self.on_node_end:
-                            self.on_node_end(node, time.perf_counter() - start, True)
+                            self.on_node_end(
+                                node, time.perf_counter() - start, True, False
+                            )
                         ts.done(node)
                         return
                     args = [self._resolve(a) for a in node.args]
@@ -681,7 +712,15 @@ class Engine:
                         except Exception:
                             if self.continue_on_error:
                                 logger.error("node %s failed", node.key, exc_info=True)
-                                val = None
+                                self._failed.add(node.key)
+                                dur = time.perf_counter() - start
+                                if self.on_node_end is not None:
+                                    self.on_node_end(node, dur, False, True)
+                                sem.release()
+                                ts.done(node)
+                                for ready in ts.get_ready():
+                                    submit(ready)
+                                continue
                             else:
                                 sem.release()
                                 raise
@@ -691,7 +730,7 @@ class Engine:
                                 self.cache.save_script(node)
                         dur = time.perf_counter() - start
                         if self.on_node_end is not None:
-                            self.on_node_end(node, dur, False)
+                            self.on_node_end(node, dur, False, False)
                         with self._lock:
                             self._exec_count += 1
                         sem.release()
@@ -705,7 +744,7 @@ class Engine:
         self.on_node_start = orig_start
         self.on_node_end = orig_end
         if self.on_flow_end is not None:
-            self.on_flow_end(root, wall, self._exec_count)
+            self.on_flow_end(root, wall, self._exec_count, len(self._failed))
         result = self.cache.get(root.key)[1]
 
         if not (cache_root and root.cache):
