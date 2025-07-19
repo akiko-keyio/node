@@ -763,7 +763,12 @@ class Engine:
 
 
 class Config:
-    """Store default arguments for tasks using OmegaConf."""
+    """Store default arguments for tasks using OmegaConf.
+
+    Configuration values may reference other nodes using ``${...}`` syntax. When
+    such references are encountered, :class:`Config` will lazily build the
+    referenced node with the provided :class:`Flow` instance.
+    """
 
     def __init__(
         self,
@@ -773,17 +778,57 @@ class Config:
             self._conf: DictConfig = OmegaConf.load(str(mapping))
         else:
             self._conf = OmegaConf.create(mapping or {})
+        self._nodes: Dict[str, "Node"] = {}
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
         """Create Config from a YAML file."""
         return cls(OmegaConf.load(str(path)))
 
-    def defaults(self, fn_name: str) -> Dict[str, Any]:
+    def _locate(self, path: str) -> Callable[..., Any]:
+        mod_name, attr = path.rsplit(".", 1)
+        mod = __import__(mod_name, fromlist=[attr])
+        return getattr(mod, attr)
+
+    def _resolve_value(self, val: Any, flow: "Flow") -> Any:
+        if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+            key = val[2:-1]
+            if key in self._conf and "_target_" in self._conf[key]:
+                return self._build_node(key, flow)
+            return OmegaConf.select(self._conf, key)
+        return val
+
+    def _build_node(self, name: str, flow: "Flow") -> "Node":
+        if name in self._nodes:
+            return self._nodes[name]
+        cfg = self._conf[name]
+        target = cfg.get("_target_", name)
+        if isinstance(target, str) and target.startswith("${") and target.endswith("}"):
+            fn_node = self._build_node(target[2:-1], flow)
+            fn = fn_node.fn
+        else:
+            fn = self._locate(str(target))
+        params = {
+            k: self._resolve_value(v, flow)
+            for k, v in OmegaConf.to_container(cfg, resolve=False).items()
+            if k != "_target_"
+        }
+        node = fn(**params)
+        self._nodes[name] = node
+        return node
+
+    def defaults(self, fn_name: str, *, flow: "Flow" | None = None) -> Dict[str, Any]:
         node_cfg = self._conf.get(fn_name)
         if node_cfg is None:
             return {}
-        return cast(Dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
+        if flow is None:
+            return cast(Dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
+        result: Dict[str, Any] = {}
+        for k, v in OmegaConf.to_container(node_cfg, resolve=False).items():
+            if k == "_target_":
+                continue
+            result[k] = self._resolve_value(v, flow)
+        return result
 
 
 class Flow:
@@ -854,7 +899,7 @@ class Flow:
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
                 bound = sig_obj.bind_partial(*args, **kwargs)
-                for name, val in self.config.defaults(fn.__name__).items():
+                for name, val in self.config.defaults(fn.__name__, flow=self).items():
                     if name not in bound.arguments:
                         bound.arguments[name] = val
                 bound.apply_defaults()
