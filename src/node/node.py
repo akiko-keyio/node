@@ -984,7 +984,11 @@ class Flow:
             _render_cache.clear()
 
 
-def gather(*nodes: Node | Iterable[Node], workers: int | None = None) -> Node:
+def gather(
+    *nodes: Node | Iterable[Node],
+    workers: int | None = None,
+    cache: bool = True,
+) -> Node:
     """Aggregate multiple nodes into a single list result.
 
     ``nodes`` may be passed either as positional arguments or as a single
@@ -1006,7 +1010,7 @@ def gather(*nodes: Node | Iterable[Node], workers: int | None = None) -> Node:
     if any(n.flow is not flow for n in nodes_list):
         raise ValueError("nodes belong to different Flow instances")
 
-    @flow.node(workers=workers)
+    @flow.node(workers=workers, cache=cache)
     def _gather(*items):
         return list(items)
 
