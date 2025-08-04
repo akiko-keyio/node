@@ -10,7 +10,6 @@ import pickle
 import threading
 import time
 import warnings
-from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
@@ -358,7 +357,8 @@ class Node:
 
     @functools.cached_property
     def order(self) -> List["Node"]:
-        return _topo_order(self)
+        order, _ = _build_graph(self, None)
+        return order
 
     @functools.cached_property
     def signature(self) -> str:
@@ -386,17 +386,34 @@ class Node:
 # ----------------------------------------------------------------------
 # DAG helpers
 # ----------------------------------------------------------------------
-def _topo_order(root: Node):
-    stack, edges, seen = deque([root]), {}, set()
+def _build_graph(
+    root: Node, cache: Cache | None
+) -> tuple[list[Node], dict[Node, list[Node]]]:
+    """Return topological order and dependency graph.
+
+    When ``cache`` is provided, traversal stops at nodes with a cache hit,
+    effectively pruning their ancestors from the resulting graph.
+    """
+
+    edges: dict[Node, list[Node]] = {}
+    stack = [root]
+    seen: set[Node] = set()
     while stack:
-        n = stack.pop()
-        if n in seen:
+        node = stack.pop()
+        if node in seen:
             continue
-        seen.add(n)
-        deps = sorted(n.deps)
-        edges[n] = deps
+        seen.add(node)
+        hit = False
+        if cache is not None and node.cache:
+            hit, _ = cache.get(node.key)
+        if hit:
+            edges[node] = []
+            continue
+        deps = sorted(node.deps)
+        edges[node] = deps
         stack.extend(deps)
-    return list(TopologicalSorter(edges).static_order())
+    order = list(TopologicalSorter(edges).static_order())
+    return order, edges
 
 
 def _render_call(
@@ -593,7 +610,7 @@ class Engine:
             return val
 
         t0 = time.perf_counter()
-        order = root.order
+        order, edges = _build_graph(root, self.cache)
 
         max_node_workers = 1
         for node in order:
@@ -646,7 +663,7 @@ class Engine:
             _set_process_queue(proc_q)
             pool_kwargs["initializer"] = _worker_init
             pool_kwargs["initargs"] = (proc_q,)
-        ts = TopologicalSorter({n: n.deps for n in order})
+        ts = TopologicalSorter(edges)
         ts.prepare()
 
         sems: Dict[Callable[..., Any], threading.Semaphore] = {}
