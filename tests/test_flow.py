@@ -606,3 +606,44 @@ def test_deep_chain_signature(flow_factory):
         node = inc(node)
 
     assert flow.run(node) == 201
+
+
+def test_cached_dependency_skips_upstream(flow_factory):
+    class TrackingCache(MemoryLRU):
+        def __init__(self):
+            super().__init__()
+            self.calls: list[str] = []
+
+        def get(self, key: str):  # type: ignore[override]
+            self.calls.append(key)
+            return super().get(key)
+
+    cache = TrackingCache()
+    flow = flow_factory(cache=cache)
+
+    @flow.node()
+    def c():
+        return 1
+
+    c_node = c()
+
+    @flow.node()
+    def b(x):
+        return x + 1
+
+    b_node = b(c_node)
+
+    @flow.node()
+    def a(y):
+        return y + 1
+
+    root = a(b_node)
+
+    assert flow.run(root) == 3
+
+    cache.delete(root.key)
+    cache.calls.clear()
+
+    assert flow.run(root) == 3
+    assert c_node.key not in cache.calls
+    assert b_node.key in cache.calls
