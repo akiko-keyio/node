@@ -867,6 +867,16 @@ class Config:
             result[k] = self._resolve_value(v, flow)
         return result
 
+    def copy_from(self, other: "Config") -> None:
+        """Copy ``other`` into this config without changing object identity."""
+        self._cache_nodes = other._cache_nodes
+        self._nodes.clear()
+        for key in list(self._conf.keys()):
+            del self._conf[key]
+        data = OmegaConf.to_container(other._conf, resolve=False) or {}
+        for key, value in data.items():
+            self._conf[key] = value
+
 
 class Flow:
     def __init__(
@@ -906,10 +916,7 @@ class Flow:
 
     def reset_config(self) -> None:
         """Restore the configuration used at initialization."""
-        self.config = Config(
-            OmegaConf.create(self._initial_config._conf),
-            cache_nodes=self._initial_config._cache_nodes,
-        )
+        self.config.copy_from(self._initial_config)
 
     def node(
         self,
