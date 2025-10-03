@@ -854,17 +854,78 @@ class Config:
             self._nodes[name] = node
         return node
 
-    def defaults(self, fn_name: str, *, flow: "Flow" | None = None) -> Dict[str, Any]:
+    def defaults(
+        self,
+        fn_name: str,
+        *,
+        flow: "Flow" | None = None,
+        presets: str | Sequence[str] | None = None,
+    ) -> Dict[str, Any]:
         node_cfg = self._conf.get(fn_name)
         if node_cfg is None:
             return {}
-        if flow is None:
-            return cast(Dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
-        result: Dict[str, Any] = {}
-        for k, v in OmegaConf.to_container(node_cfg, resolve=False).items():
-            if k == "_target_":
+
+        data = OmegaConf.to_container(node_cfg, resolve=False) or {}
+        if not isinstance(data, Mapping):
+            return {}
+
+        base_values: Dict[str, Any] = {}
+        presets_cfg: Mapping[str, Any] | None = None
+        for key, value in data.items():
+            if key == "_target_":
                 continue
-            result[k] = self._resolve_value(v, flow)
+            if key == "_presets":
+                if isinstance(value, Mapping):
+                    presets_cfg = value
+                else:
+                    raise TypeError("_presets must be a mapping of preset names")
+                continue
+            base_values[key] = value
+
+        def resolve_mapping(values: Mapping[str, Any]) -> Dict[str, Any]:
+            if flow is None:
+                return cast(
+                    Dict[str, Any],
+                    OmegaConf.to_container(
+                        OmegaConf.create(dict(values)), resolve=True
+                    ),
+                )
+            return {
+                name: self._resolve_value(val, flow) for name, val in values.items()
+            }
+
+        result = resolve_mapping(base_values)
+
+        preset_names: Sequence[str]
+        if presets is None:
+            preset_names = ()
+        elif isinstance(presets, str):
+            preset_names = (presets,)
+        elif isinstance(presets, Sequence):
+            preset_names = tuple(presets)
+        else:
+            raise TypeError("presets must be a string or a sequence of strings")
+
+        if preset_names:
+            if presets_cfg is None:
+                raise KeyError(
+                    f"No presets configured for node '{fn_name}' while requesting {preset_names}"
+                )
+            for preset_name in preset_names:
+                if not isinstance(preset_name, str):
+                    raise TypeError("preset names must be strings")
+                preset_values = presets_cfg.get(preset_name)
+                if preset_values is None:
+                    raise KeyError(
+                        f"Preset '{preset_name}' is not defined for node '{fn_name}'"
+                    )
+                if not isinstance(preset_values, Mapping):
+                    raise TypeError("preset values must be provided as mappings")
+                for key, value in resolve_mapping(
+                    cast(Mapping[str, Any], preset_values)
+                ).items():
+                    result[key] = value
+
         return result
 
     def copy_from(self, other: "Config") -> None:
@@ -938,6 +999,10 @@ class Flow:
             Whether to cache the result.
         local:
             Execute directly in the caller thread, bypassing any executor.
+        The decorated callable accepts an extra keyword argument ``presets`` that
+        lets callers opt into configuration presets defined under the node's
+        ``_presets`` entry.
+
         """
 
         ignore_set = set(ignore or [])
@@ -945,6 +1010,27 @@ class Flow:
         def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
             setattr(fn, "_node_ignore", ignore_set)  # type: ignore[attr-defined]
             sig_obj = inspect.signature(fn)
+            if "presets" in sig_obj.parameters:
+                raise ValueError("node functions must not define a 'presets' argument")
+            params = list(sig_obj.parameters.values())
+            preset_param = inspect.Parameter(
+                "presets",
+                kind=inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+            )
+            var_kw_index = next(
+                (
+                    idx
+                    for idx, param in enumerate(params)
+                    if param.kind == inspect.Parameter.VAR_KEYWORD
+                ),
+                None,
+            )
+            if var_kw_index is None:
+                params.append(preset_param)
+            else:
+                params.insert(var_kw_index, preset_param)
+            wrapper_sig = sig_obj.replace(parameters=params)
             setattr(fn, "_node_sig", sig_obj)
             setattr(
                 fn,
@@ -964,8 +1050,10 @@ class Flow:
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
+                presets = kwargs.pop("presets", None)
                 bound = sig_obj.bind_partial(*args, **kwargs)
-                for name, val in self.config.defaults(fn.__name__, flow=self).items():
+                defaults = self.config.defaults(fn.__name__, flow=self, presets=presets)
+                for name, val in defaults.items():
                     if name not in bound.arguments:
                         bound.arguments[name] = val
                 bound.apply_defaults()
@@ -977,7 +1065,7 @@ class Flow:
                 self._registry[node] = node
                 return node
 
-            wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
+            wrapper.__signature__ = wrapper_sig  # type: ignore[attr-defined]
             return wrapper
 
         return deco
