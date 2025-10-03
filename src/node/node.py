@@ -174,11 +174,29 @@ class DiskJoblib(Cache):
         if not p.exists():
             return False, None
 
-        if p.stat().st_size <= self.small_file:
-            with p.open("rb") as fh:
-                return True, pickle.load(fh)
+        try:
+            if p.stat().st_size <= self.small_file:
+                with p.open("rb") as fh:
+                    return True, pickle.load(fh)
+            return True, joblib.load(p)
+        except Exception as exc:  # pragma: no cover - defensive
+            if isinstance(
+                exc, (pickle.UnpicklingError, EOFError, AttributeError, ValueError)
+            ):
+                return self._handle_corrupt_cache(p, exc)
+            raise RuntimeError(f"Failed to load cache file {p}: {exc}") from exc
 
-        return True, joblib.load(p)
+    def _handle_corrupt_cache(self, path: Path, error: Exception) -> tuple[bool, None]:
+        logger.error(
+            "Failed to load cache file %s: %s. Deleting the cache entry.",
+            path,
+            error,
+        )
+        with suppress(OSError):
+            path.unlink()
+        with suppress(OSError):
+            path.with_suffix(".py").unlink()
+        return False, None
 
     def put(self, key: str, value: Any):
         p = self._path(key)
