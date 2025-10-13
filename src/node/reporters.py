@@ -1,7 +1,7 @@
 from __future__ import annotations
 # coverage: ignore-file
 
-from typing import Dict, TYPE_CHECKING
+from typing import Dict, Set, TYPE_CHECKING
 from contextlib import nullcontext
 import time
 import sys
@@ -112,6 +112,7 @@ class _RichReporterCtx:
         self.q: SimpleQueue = SimpleQueue()
         self.running: Dict[str, tuple[str, float]] = {}
         self.tracks: Dict[str, tuple[Progress, int, str]] = {}
+        self.node_track_ids: Dict[str, Set[str]] = {}
         self.hits = 0
         self.hit_time = 0.0
         self.execs = 0
@@ -140,10 +141,12 @@ class _RichReporterCtx:
 
     def _get_track(self, node_key: str) -> Progress | None:
         """Return progress object for ``node_key`` if active."""
-        for prog, _, node in self.tracks.values():
-            if node == node_key:
-                return prog
-        return None
+        ids = self.node_track_ids.get(node_key)
+        if not ids:
+            return None
+        tid = next(iter(ids))
+        prog, *_ = self.tracks.get(tid, (None, None, ""))
+        return prog
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -229,8 +232,9 @@ class _RichReporterCtx:
         if getattr(_track_ctx, "ctx", None) is self:
             _track_ctx.ctx = None
             _track_ctx.node = None
-        for tid, (_, _, node) in list(self.tracks.items()):
-            if node == n.key:
+        ids = self.node_track_ids.get(n.key)
+        if ids:
+            for tid in list(ids):
                 self.q.put(("track_end", tid))
         self.current_node = None
         if self.orig_end:
@@ -301,6 +305,8 @@ class _RichReporterCtx:
                 prog = self._make_progress()
                 task = prog.add_task(desc, total=total)
                 self.tracks[tid] = (prog, task, node_key)
+                if node_key:
+                    self.node_track_ids.setdefault(node_key, set()).add(tid)
             elif typ == "track_update":
                 tid, completed = rest
                 prog, task, _ = self.tracks.get(tid, (None, None, None))
@@ -308,7 +314,15 @@ class _RichReporterCtx:
                     prog.update(task, completed=completed)
             elif typ == "track_end":
                 tid = rest[0]
-                self.tracks.pop(tid, None)
+                info = self.tracks.pop(tid, None)
+                if info is not None:
+                    node_key = info[2]
+                    if node_key:
+                        ids = self.node_track_ids.get(node_key)
+                        if ids is not None:
+                            ids.discard(tid)
+                            if not ids:
+                                self.node_track_ids.pop(node_key, None)
             elif typ == "flow":
                 wall = rest[0]
                 if self.exec_start is None:
