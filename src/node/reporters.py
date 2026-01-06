@@ -8,7 +8,7 @@ import sys
 import threading
 from queue import SimpleQueue, Empty
 from multiprocessing import Queue
-from typing import Iterable, Generator, Any
+from typing import Iterable, Generator, Any, List, Optional, TYPE_CHECKING
 from rich.progress import (
     Progress,
     BarColumn,
@@ -49,7 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover - for type checking only
     from .runtime import Runtime
 
 
-__all__ = ["RichReporter", "track"]
+__all__ = ["RichReporter", "MultiReporter", "track"]
 
 
 class RichReporter:
@@ -101,6 +101,35 @@ class RichReporter:
         if getattr(self.console, "_live", None) is not None:
             return nullcontext()
         return _RichReporterCtx(self, runtime, root)
+
+
+class MultiReporter:
+    """Combines multiple reporters into one."""
+
+    def __init__(self, reporters: Iterable[Any]):
+        self.reporters = [r for r in reporters if r is not None]
+
+    def attach(self, runtime: "Runtime", root: Node):
+        if not self.reporters:
+            return nullcontext()
+        return _MultiReporterCtx(self.reporters, runtime, root)
+
+
+class _MultiReporterCtx:
+    """Context manager for multiple reporters."""
+
+    def __init__(self, reporters: List[Any], runtime: "Runtime", root: Node):
+        self.ctxs = [r.attach(runtime, root) for r in reporters]
+
+    def __enter__(self):
+        for ctx in self.ctxs:
+            ctx.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        # Exit in reverse order for correct nesting
+        for ctx in reversed(self.ctxs):
+            ctx.__exit__(exc_type, exc, tb)
 
 
 class _TaskStats:

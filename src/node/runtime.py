@@ -33,6 +33,7 @@ __all__ = [
 # Singleton instance
 _runtime: Optional["Runtime"] = None
 _runtime_lock = threading.Lock()
+_REPORTER_SENTINEL = object()
 
 
 def get_runtime() -> "Runtime":
@@ -51,7 +52,7 @@ def configure(
     cache: Cache | None = None,
     executor: str = "thread",
     workers: int = 4,
-    reporter: Any = None,
+    reporter: Any = _REPORTER_SENTINEL,
     continue_on_error: bool = True,
     validate: bool = True,
 ) -> "Runtime":
@@ -136,7 +137,7 @@ class Runtime:
         executor: str = "thread",
         workers: int = 4,
         default_workers: int | None = None,  # Backwards compat alias
-        reporter: Any = None,
+        reporter: Any = _REPORTER_SENTINEL,
         continue_on_error: bool = True,
         validate: bool = True,
     ):
@@ -172,15 +173,45 @@ class Runtime:
         self._lock = threading.Lock()
         self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
 
-        # Reporter
-        if reporter is None:
+        # Reporter logic:
+        # 1. _REPORTER_SENTINEL (default): Use [RichReporter]
+        # 2. None: Use [] (Disabled)
+        # 3. List/Tuple: Use verified reporters from list
+        # 4. Single Object: Use [Object, RichReporter] (Additive)
+        
+        reporters = []
+        
+        # Helper to get RichReporter
+        def _get_rich():
             try:
                 from .reporters import RichReporter
-                self.reporter = RichReporter()
-            except Exception:
-                self.reporter = None
+                return RichReporter()
+            except (ImportError, Exception):
+                return None
+
+        if reporter is _REPORTER_SENTINEL:
+            rich = _get_rich()
+            if rich:
+                reporters.append(rich)
+        elif reporter is None:
+            pass # Explicitly disabled
+        elif isinstance(reporter, (list, tuple)):
+            reporters.extend([r for r in reporter if r is not None])
         else:
-            self.reporter = reporter
+            # Add provided reporter
+            reporters.append(reporter)
+            # And attach RichReporter by default
+            rich = _get_rich()
+            if rich and not any(isinstance(r, type(rich)) for r in reporters):
+                reporters.append(rich)
+
+        if not reporters:
+            self.reporter = None
+        elif len(reporters) == 1:
+            self.reporter = reporters[0]
+        else:
+            from .reporters import MultiReporter
+            self.reporter = MultiReporter(reporters)
 
         # Callbacks (for reporter integration)
         self.on_node_start: Callable[[Node], None] | None = None
