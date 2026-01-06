@@ -1,12 +1,12 @@
 from rich.console import Console
-from node.node import Flow
+from node import Runtime
 from node.reporters import RichReporter, track
 
 
 def test_track_inside_node():
-    flow = Flow(validate=False, continue_on_error=False)
+    rt = Runtime(validate=False, continue_on_error=False)
 
-    @flow.node()
+    @rt.define()
     def loop(n: int) -> int:
         total = 0
         for i in track(range(n), description="loop", total=n):
@@ -15,5 +15,5 @@ def test_track_inside_node():
 
     root = loop(5)
     reporter = RichReporter(console=Console(force_terminal=True))
-    result = flow.run(root, reporter=reporter)
+    result = rt.run(root, reporter=reporter)
     assert result == 10

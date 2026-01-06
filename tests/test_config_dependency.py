@@ -1,14 +1,14 @@
-from node.node import Flow, Config
+from node import Runtime, Config
 
-flow = Flow(validate=False)
+rt = Runtime(validate=False)
 
 
-@flow.node()
+@rt.define()
 def taska(param1: int, param2: int) -> int:
     return param1 + param2
 
 
-@flow.node()
+@rt.define()
 def taskb(depend: int, param1: int) -> int:
     return depend + param1
 
@@ -26,6 +26,6 @@ def test_config_dependency(tmp_path):
         },
     }
     config = Config(cfg)
-    flow.config = config
+    rt.config = config
     node = taskb()
     assert node.get() == 10

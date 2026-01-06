@@ -3,26 +3,26 @@ import io
 import pstats
 import time
 
-from node.node import ChainCache, DiskJoblib, Flow, MemoryLRU, gather
+from node import ChainCache, DiskJoblib, Runtime, MemoryLRU, gather
 
 
 def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
     cache = ChainCache([MemoryLRU(), DiskJoblib(tmp_path, small_file=small_file)])
-    flow = Flow(cache=cache, executor="thread", default_workers=8, reporter=None)
-    flow.reporter = None
+    rt = Runtime(cache=cache, executor="thread", default_workers=8, reporter=None)
+    rt.reporter = None
 
-    @flow.node()
+    @rt.define()
     def text(i: int) -> str:
         return f"text-{i}"
 
     root = gather([text(i) for i in range(500)])
-    flow.run(root)
+    rt.run(root)
     cache.caches[0]._lru.clear()
 
     prof = cProfile.Profile()
     prof.enable()
     start = time.perf_counter()
-    flow.run(root)
+    rt.run(root)
     duration = time.perf_counter() - start
     prof.disable()
 

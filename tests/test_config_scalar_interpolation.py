@@ -1,10 +1,10 @@
-from node.node import Config
+from node import Config
 
 
-def test_scalar_interpolation(flow_factory):
-    flow = flow_factory()
+def test_scalar_interpolation(runtime_factory):
+    rt = runtime_factory()
 
-    @flow.node()
+    @rt.define()
     def show_year(year: int) -> int:
         return year
 
@@ -15,6 +15,6 @@ def test_scalar_interpolation(flow_factory):
             "year": "${year}",
         },
     }
-    flow.config = Config(cfg)
+    rt.config = Config(cfg)
     node = show_year()
     assert node.get() == 2023

@@ -7,15 +7,23 @@ src_path = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(src_path))
 
 import pytest
-from node.node import ChainCache, DiskJoblib, Flow, MemoryLRU
+from node import Runtime, ChainCache, DiskJoblib, MemoryLRU, reset
+
+
+@pytest.fixture(autouse=True)
+def reset_runtime():
+    """Reset global runtime before each test."""
+    reset()
+    yield
+    reset()
 
 
 @pytest.fixture
-def flow_factory(tmp_path):
-    def _make(**kwargs) -> Flow:
+def runtime_factory(tmp_path):
+    def _make(**kwargs) -> Runtime:
         cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
         kwargs.setdefault("continue_on_error", False)
         kwargs.setdefault("validate", False)
-        return Flow(cache=cache, **kwargs)
+        return Runtime(cache=cache, **kwargs)
 
     return _make

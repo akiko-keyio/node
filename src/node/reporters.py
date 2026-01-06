@@ -1,7 +1,7 @@
 from __future__ import annotations
 # coverage: ignore-file
 
-from typing import Dict, Set, TYPE_CHECKING
+from typing import Dict, Set, List, TYPE_CHECKING
 from contextlib import nullcontext
 import time
 import sys
@@ -25,7 +25,7 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
 from rich.table import Table  # type: ignore[import]
 
-from .node import Node, _render_call
+from .core import Node, _render_call, _build_graph
 from .logger import console as _console
 
 # active reporter context for track()
@@ -46,7 +46,8 @@ def _worker_init(q: Queue) -> None:
 IN_JUPYTER = "ipykernel" in sys.modules
 
 if TYPE_CHECKING:  # pragma: no cover - for type checking only
-    from .node import Engine
+    from .runtime import Runtime
+
 
 __all__ = ["RichReporter", "track"]
 
@@ -91,7 +92,7 @@ class RichReporter:
         else:
             self.console = console
 
-    def attach(self, engine: "Engine", root: Node):
+    def attach(self, runtime: "Runtime", root: Node):
         """Return a context manager bound to ``engine`` and ``root``.
 
         If the console already has an active live display, a no-op context
@@ -99,31 +100,45 @@ class RichReporter:
         """
         if getattr(self.console, "_live", None) is not None:
             return nullcontext()
-        return _RichReporterCtx(self, engine, root)
+        return _RichReporterCtx(self, runtime, root)
+
+
+class _TaskStats:
+    def __init__(self, total: int):
+        self.total = total
+        self.completed = 0
+        self.running = 0
+        self.first_start: float | None = None
+        self.last_end: float | None = None
 
 
 class _RichReporterCtx:
     """Context manager handling ``rich`` updates for a run."""
 
-    def __init__(self, reporter: RichReporter, engine: "Engine", root: Node):
+    def __init__(self, reporter: RichReporter, runtime: "Runtime", root: Node):
         self.cfg = reporter
-        self.engine = engine
+        self.runtime = runtime
         self.root = root
         self.q: SimpleQueue = SimpleQueue()
-        self.running: Dict[str, tuple[str, float]] = {}
-        self.tracks: Dict[str, tuple[Progress, int, str]] = {}
-        self.node_track_ids: Dict[str, Set[str]] = {}
-        self.hits = 0
-        self.hit_time = 0.0
-        self.execs = 0
-        self.fails = 0
-        self.fail_time = 0.0
+        
+        # Stats by function name
+        self.stats: Dict[str, _TaskStats] = {}
+        # Order of appearance for function names to maintain stable sort
+        self.task_order: List[str] = []
+        
         self.exec_start: float | None = None
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
         self.current_node: str | None = None
         self.proc_queue: Queue | None = None
-        self.seen: set[str] = set()
+        
+        # Internal tracking
+        self.node_to_fn_name: Dict[str, str] = {}
+        self.running_nodes: Set[str] = set()
+        
+        # Restore tracking attributes for track() support
+        self.tracks: Dict[str, tuple[Progress, int, str]] = {}
+        self.node_track_ids: Dict[str, Set[str]] = {}
 
     def _make_progress(self) -> Progress:
         """Return a progress instance configured for single-line display."""
@@ -138,15 +153,6 @@ class _RichReporterCtx:
             console=self.cfg.console,
             refresh_per_second=self.cfg.refresh_per_second,
         )
-
-    def _get_track(self, node_key: str) -> Progress | None:
-        """Return progress object for ``node_key`` if active."""
-        ids = self.node_track_ids.get(node_key)
-        if not ids:
-            return None
-        tid = next(iter(ids))
-        prog, *_ = self.tracks.get(tid, (None, None, ""))
-        return prog
 
     @staticmethod
     def _format_dur(seconds: float) -> str:
@@ -163,19 +169,27 @@ class _RichReporterCtx:
             m = int(seconds // 60)
             s = int(seconds % 60)
             return f"{m}m {s}s" if s else f"{m}m"
-        return f"{seconds:.1f}s"
+        return f"{seconds:.1f} s"
 
     # --------------------------------------------------------------
     def __enter__(self):
-        self.orig_start = self.engine.on_node_start
-        self.orig_end = self.engine.on_node_end
-        self.orig_flow = self.engine.on_flow_end
-        self.engine.on_node_start = self._start
-        self.engine.on_node_end = self._end
-        self.engine.on_flow_end = self._flow
-        order = self.root.order
-        self.total = len(order)
-        self.seen = {n.key for n in order}
+        self.orig_start = self.runtime.on_node_start
+        self.orig_end = self.runtime.on_node_end
+        self.orig_flow = self.runtime.on_flow_end
+        self.runtime.on_node_start = self._start
+        self.runtime.on_node_end = self._end
+        self.runtime.on_flow_end = self._flow
+        
+        # Pre-calculate totals by function name
+        order, _ = _build_graph(self.root, self.runtime.cache)
+        for node in order:
+            fn_name = node.fn.__name__
+            self.node_to_fn_name[node.key] = fn_name
+            if fn_name not in self.stats:
+                self.stats[fn_name] = _TaskStats(0)
+                self.task_order.append(fn_name)
+            self.stats[fn_name].total += 1
+
         self.live = Live(
             self._render(),
             refresh_per_second=self.cfg.refresh_per_second,
@@ -200,17 +214,17 @@ class _RichReporterCtx:
             pass
         else:
             self.live.console.print(final_render)
-        self.engine.on_node_start = self.orig_start
-        self.engine.on_node_end = self.orig_end
-        self.engine.on_flow_end = self.orig_flow
+        self.runtime.on_node_start = self.orig_start
+        self.runtime.on_node_end = self.orig_end
+        self.runtime.on_flow_end = self.orig_flow
         _set_process_queue(None)
 
     # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
         if self.cfg.show_script_line:
-            call = n.lines[-1][-1]
+            call = n.script_lines[-1][-1]
         else:
-            call = _render_call(n.fn, n.args, n.kwargs, bound=n.bound_args)
+            call = _render_call(n.fn, n.inputs)
 
         label = Syntax(
             call,
@@ -278,28 +292,41 @@ class _RichReporterCtx:
                 typ, *rest = self.q.get_nowait()
             except Empty:
                 break
+            
             if typ == "start":
                 k, label, ts = rest
-                self.running[k] = (label, ts)
-                if k not in self.seen:
-                    self.seen.add(k)
-                    self.total += 1
+                fn_name = self.node_to_fn_name.get(k)
+                if fn_name:
+                    stats = self.stats[fn_name]
+                    if stats.first_start is None:
+                        stats.first_start = ts
+                    stats.running += 1
+                self.running_nodes.add(k)
+                    
             elif typ == "end":
                 k, dur, cached, failed = rest
-                label, ts = self.running.pop(k, (k, time.perf_counter()))
-                if failed:
-                    self.fails += 1
-                    self.fail_time += dur
-                elif cached:
-                    self.hits += 1
-                    self.hit_time += dur
-                else:
-                    self.execs += 1
-                    if self.exec_start is None or ts < self.exec_start:
-                        self.exec_start = ts
-                    end = ts + dur
-                    if self.exec_end is None or end > self.exec_end:
-                        self.exec_end = end
+                if k in self.running_nodes:
+                    self.running_nodes.remove(k)
+                
+                
+                
+                
+                fn_name = self.node_to_fn_name.get(k)
+                if fn_name:
+                    stats = self.stats[fn_name]
+                    
+                    # Always decrement running on end
+                    stats.running -= 1
+                    if stats.running < 0:
+                        stats.running = 0
+
+                    if cached:
+                        # Cached tasks are hidden from the total count
+                        stats.total -= 1
+                    else:
+                        stats.completed += 1
+                        stats.last_end = time.perf_counter()
+
             elif typ == "track_start":
                 tid, node_key, desc, total = rest
                 prog = self._make_progress()
@@ -325,81 +352,75 @@ class _RichReporterCtx:
                                 self.node_track_ids.pop(node_key, None)
             elif typ == "flow":
                 wall = rest[0]
-                if self.exec_start is None:
-                    now = time.perf_counter()
-                    self.exec_start = now - wall
-                    self.exec_end = now
-                elif self.exec_end is None:
-                    self.exec_end = self.exec_start + wall
+                # flow end handler if needed
+                pass
 
     # --------------------------------------------------------------
-    def _header(self, final: bool) -> Text:
-        exec_time = 0.0
-        if self.exec_start is not None:
-            if self.exec_end is not None:
-                end = self.exec_end
-            elif final:
-                end = time.perf_counter()
-            else:
-                end = self.exec_start
-            exec_time = end - self.exec_start
-        done = self.hits + self.execs + self.fails
-        remain = self.total - done - len(self.running)
-        avg = (
-            (exec_time + self.fail_time) / (self.execs + self.fails)
-            if (self.execs + self.fails)
-            else 0.0
-        )
-        eta = int(remain * avg)
-        fmt = self._format_dur
-        parts = []
-        if self.hits:
-            parts += [
-                ("⚡️"),
-                (" Cache ", "bold"),
-                (f"{self.hits} ", "bold"),
-                (f"[{fmt(self.hit_time)}]", "gray50"),
-            ]
-        if self.execs:
-            prefix = "\t" if parts else ""
-            parts += [
-                (f"{prefix}✨️"),
-                (" Create ", "bold"),
-                (f"{int(self.execs)} ", "bold"),
-                (f"[{fmt(exec_time)}]", "gray50"),
-            ]
-        if self.fails:
-            prefix = "\t" if parts else ""
-            parts += [
-                (f"{prefix}❌"),
-                (" Fail ", "bold"),
-                (f"{self.fails} ", "bold"),
-            ]
-        if not final:
-            prefix = "\t" if parts else ""
-            parts += [
-                (f"{prefix}📋️"),
-                (" Pending ", "bold"),
-                (f"{remain} ", "bold"),
-                (f"[ETA: {fmt(eta)}]", "gray50"),
-            ]
-        return Text.assemble(*parts)
-
     def _render(self, final: bool = False) -> Group:
-        out = [self._header(final)]
+        lines = []
         now = time.perf_counter()
-        icon = str(self.spinner.render(now))
-        table = Table.grid(expand=True)
-        for key, (label, ts) in list(self.running.items()):
-            dur = self._format_dur(now - ts)
-            row = Text.assemble(icon, " ", label, (f" [{dur}]", "gray50"))
-            track = self._get_track(key)
-            if track:
-                table.add_row(row, track)
+        # Use orange1 for running spinner
+        spinner = self.spinner.render(now)
+        spinner.style = "orange1"
+        
+        for fn_name in self.task_order:
+            stats = self.stats[fn_name]
+            
+            # Skip if no tasks to show (all cached or empty)
+            if stats.total <= 0:
+                continue
+            
+            is_done = stats.completed >= stats.total and stats.running == 0
+            
+            # Calculate Duration
+            duration = 0.0
+            if stats.first_start is not None:
+                if is_done and stats.last_end is not None:
+                    duration = stats.last_end - stats.first_start
+                else:
+                    duration = now - stats.first_start
+            
+            if is_done:
+                # Done: Blue style
+                # • 12 Task1 Name [12.2 s]
+                icon = Text("•", style="blue")
+                count_text = f"{stats.total}"
+                dur_str = f"[{self._format_dur(duration)}]"
+                
+                # Function name: default color (no style), not bold
+                # Others: blue
+                parts = [
+                    icon,
+                    Text(" "),
+                    Text(f"{count_text}", style="blue"),
+                    Text(" "),
+                    Text(f"{fn_name}"), # Default style
+                    Text(" "),
+                    Text(dur_str, style="blue")
+                ]
             else:
-                table.add_row(row)
-        out.append(table)
-        return Group(*out)
+                # Running: Orange style
+                # ⠋ 2/7 Task3 Name [1.9 s]
+                icon = spinner
+                count_text = f"{stats.completed}/{stats.total}"
+                dur_str = f"[{self._format_dur(duration)}]"
+                
+                # Function name: default color (no style), not bold
+                # Others: orange1
+                # Time: bold orange1
+                parts = [
+                    icon,
+                    Text(" "),
+                    Text(f"{count_text}", style="orange1"),
+                    Text(" "),
+                    Text(f"{fn_name}"), # Default style
+                    Text(" "),
+                    Text(dur_str, style="bold orange1")
+                ]
+            
+            lines.append(Text.assemble(*parts))
+            
+        return Group(*lines)
 
 
 def track(

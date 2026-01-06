@@ -1,5 +1,5 @@
-from node import Flow
-from node.node import ChainCache, DiskJoblib, MemoryLRU
+from node import Runtime
+from node import ChainCache, DiskJoblib, MemoryLRU
 
 
 def test_process_pickling_fallback(tmp_path):
@@ -13,14 +13,14 @@ def test_process_pickling_fallback(tmp_path):
             pass
 
     disk.put = safe_put  # type: ignore[assignment]
-    flow = Flow(
+    rt = Runtime(
         cache=ChainCache([MemoryLRU(), disk]),
         executor="process",
         continue_on_error=False,
         validate=False,
     )
 
-    @flow.node()
+    @rt.define()
     def make_fn(x):
         def inner() -> int:
             return x
@@ -28,7 +28,7 @@ def test_process_pickling_fallback(tmp_path):
         return inner
 
     node = make_fn(5)
-    fn = flow.run(node)
+    fn = rt.run(node)
     assert fn() == 5
     p = disk._path(node.key, ".py")
     assert p.exists()

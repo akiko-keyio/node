@@ -12,29 +12,29 @@ from __future__ import annotations
 import time
 import yaml  # type: ignore[import]
 
-from node.node import ChainCache, Config, DiskJoblib, Flow, MemoryLRU
+import node
+from node import ChainCache, Config, DiskJoblib, MemoryLRU
 from node.reporters import RichReporter
 
 
 # --------------------------------------------------------------
 # Quick start
 # --------------------------------------------------------------
-quick = Flow()
+node.reset()  # Ensure clean state
 
-
-@quick.node()
+@node.define()
 def add(x: int, y: int) -> int:
     return x + y
 
 
-@quick.node()
+@node.define()
 def square(z: int) -> int:
     return z * z
 
 
 def quick_start() -> None:
     root = square(add(2, 3))
-    print("Quick result:", quick.run(root))
+    print("Quick result:", node.run(root))
     print("repr(root) =", repr(root))
 
 
@@ -46,27 +46,29 @@ add:
   y: 5
 """
 
-advanced = Flow(
+# Configure global runtime
+node.reset()
+node.configure(
     cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
     config=Config(yaml.safe_load(yaml_text)),
     executor="thread",
-    default_workers=2,
+    workers=2,
 )
 
 
-@advanced.node()
+@node.define()
 def slow_add(x: int, y: int) -> int:
     time.sleep(2)
     return x + y
 
 
-@advanced.node()
+@node.define()
 def slow_square(x: int) -> int:
     time.sleep(3)
     return x * x
 
 
-@advanced.node()
+@node.define()
 def inc(x: int) -> int:
     time.sleep(0.2)
     return x + 1
@@ -75,12 +77,12 @@ def inc(x: int) -> int:
 def advanced_topics() -> None:
     root = slow_square(slow_add(slow_square(2), slow_square(2)))
     reporter = RichReporter()
-    result = advanced.run(root, reporter=reporter)
+    result = node.run(root, reporter=reporter)
     print("Advanced result:", result)
     print("repr(root) =", repr(root))
 
     start = time.perf_counter()
-    advanced.run(root, reporter=reporter)
+    node.run(root, reporter=reporter)
     elapsed = time.perf_counter() - start
     print(f"Second run from cache: {elapsed:.2f}s")
 

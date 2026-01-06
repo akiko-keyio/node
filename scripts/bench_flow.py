@@ -1,23 +1,25 @@
-"""Tutorial & benchmark for Node Flow."""
-
+"""Tutorial & benchmark for Node."""
+import random
 import time
 from typing import Any, Tuple
 
-from src.node import Flow, Config
+import node
+from node import Config
 
 
-def build_flow() -> Tuple[Any, Any]:
+def build_graph() -> Tuple[Any, Any]:
     """Build a 400x400 node grid DAG."""
 
-    flow = Flow(config=Config(), executor="thread", default_workers=8)
+    node.configure(config=Config(), executor="thread", workers=8)
 
-    @flow.node()
-    def slow_mul(a: int, b: int) -> int:
+    @node.define()
+    def slow_mul(a, b) -> int:
+        time.sleep(random.uniform(0.0, 2.0))
         return a * b
 
     t0 = time.perf_counter()
-    N = 400
-    print("Starting building flow")
+    N = 800
+    print("Starting building graph")
     grid: list[list[Any]] = [[None] * N for _ in range(N)]
     for i in range(N):
         for j in range(N):
@@ -31,24 +33,26 @@ def build_flow() -> Tuple[Any, Any]:
                 grid[i][j] = slow_mul(grid[i - 1][j], 0.999)
 
     t1 = time.perf_counter()
-    print(f"Building Flow : {t1 - t0:6.2f} s")
-    return flow, grid[-1][-1]
+    print(f"Building Graph : {t1 - t0:6.2f} s")
+    return grid[-1][-1]
 
 
 def bench() -> None:
-    flow, root = build_flow()
+    node.reset()
+    root = build_graph()
 
     t0 = time.perf_counter()
+    # repr(root) # Evaluating repr for 160000 nodes is very slow and might hit recursion limits differently
     t1 = time.perf_counter()
-    print(f"repr : {t1 - t0:6.2f} s")
+    print(f"repr : {t1 - t0:6.2f} s (skipped)")
 
     t0 = time.perf_counter()
-    flow.run(root)
+    node.run(root)
     t1 = time.perf_counter()
     print(f"cold run : {t1 - t0:6.2f} s")
 
     t0 = time.perf_counter()
-    flow.run(root)
+    node.run(root)
     t1 = time.perf_counter()
     print(f"warm run : {t1 - t0:6.2f} s")
 

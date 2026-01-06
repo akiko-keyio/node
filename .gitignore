@@ -15,4 +15,11 @@ wheels/
 # Cache
 .cache
 .coverage
+.pytest_cache
 
+# Example project (private)
+example/
+
+# Logs and temp files
+*.log
+*.txt
