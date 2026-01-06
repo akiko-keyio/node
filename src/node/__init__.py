@@ -75,13 +75,11 @@ Flow = Runtime
 # Optional rich dependency
 track: Optional[Callable[..., Generator[Any, None, None]]] = None
 RichReporter: Optional[type] = None
-MultiReporter: Optional[type] = None
 
 try:
-    from .reporters import RichReporter as _RichReporter, MultiReporter as _MultiReporter, track as _track
+    from .reporters import RichReporter as _RichReporter, track as _track
 
     RichReporter = _RichReporter
-    MultiReporter = _MultiReporter
     track = _track
 except Exception:  # pragma: no cover - optional
     pass
@@ -109,7 +107,6 @@ __all__ = [
     "Flow",
     # Optional
     "RichReporter",
-    "MultiReporter",
     "track",
     "logger",
     "console",
