@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import functools
+
 import hashlib
 import inspect
 import threading
 import warnings
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from graphlib import TopologicalSorter
-from typing import Any, Callable, Dict, List, Tuple, cast, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, cast
 
 from cachetools import LRUCache
 
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Node",
     "gather",
-    "map",
+    "sweep",
 ]
 
 # Global caches & locks for canonical/render
@@ -28,69 +28,53 @@ _ren_lock = threading.Lock()
 _canonical_cache: LRUCache[tuple[int, str], str] = LRUCache(maxsize=4096)
 _render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
 
-
 def _is_safe_type(obj: Any, depth: int = 0) -> tuple[bool, str]:
     """检查对象是否有稳定的规范化表示。
+    
+    仅检查两种危险情况：
+    1. 嵌套过深（可能导致无限递归）
+    2. 字典键不是简单类型
     
     Returns:
         (is_safe, reason): 是否安全及原因
     """
-    # 防止无限递归
     if depth > 10:
         return False, "nested too deeply"
     
-    # 基本类型
-    if isinstance(obj, (int, float, str, bool, type(None))):
-        return True, ""
-    
-    # Node 类型（延迟导入时使用字符串检查）
-    if type(obj).__name__ == "Node":
-        return True, ""
-    
-    # 列表/元组
+    # 递归检查容器类型
     if isinstance(obj, (list, tuple)):
         for item in obj:
             safe, reason = _is_safe_type(item, depth + 1)
             if not safe:
                 return False, f"contains unsafe element: {reason}"
-        return True, ""
-    
-    # 字典
-    if isinstance(obj, dict):
+    elif isinstance(obj, dict):
         for k, v in obj.items():
             if not isinstance(k, (int, float, str, bool, type(None))):
                 return False, f"dict key {k!r} is not a simple type"
             safe, reason = _is_safe_type(v, depth + 1)
             if not safe:
                 return False, f"dict value: {reason}"
-        return True, ""
-    
-    # 集合
-    if isinstance(obj, set):
+    elif isinstance(obj, set):
         for item in obj:
             safe, reason = _is_safe_type(item, depth + 1)
             if not safe:
                 return False, f"set element: {reason}"
-        return True, ""
     
-    # 其他类型：尝试验证 repr 稳定性
-    try:
-        r1 = repr(obj)
-        r2 = repr(obj)
-        if r1 != r2:
-            return False, f"unstable repr for {type(obj).__name__}"
-        # 检测可能的内存地址
-        if "at 0x" in r1 or ("<" in r1 and ">" in r1 and "object" in r1.lower()):
-            return False, f"repr likely contains memory address for {type(obj).__name__}"
-        return True, ""
-    except Exception as e:
-        return False, f"repr failed: {e}"
+    return True, ""
 
 
 def _canonical(obj: Any) -> str:
     """Convert an object into a deterministic string representation."""
     if isinstance(obj, Node):
         return obj.key
+    
+    # @node.define 装饰过的函数：用函数名作为规范表示
+    if callable(obj) and hasattr(obj, "_node_sig"):
+        return f"NodeFactory:{obj.__name__}"
+    
+    # 普通函数/方法：用 __qualname__ 避免内存地址
+    if callable(obj) and hasattr(obj, "__qualname__"):
+        return f"Func:{obj.__qualname__}"
 
     # 类型安全检查
     safe, reason = _is_safe_type(obj)
@@ -103,11 +87,11 @@ def _canonical(obj: Any) -> str:
             stacklevel=4,
         )
 
-    key = (id(obj), repr(obj))
+    # 使用 (id, type_name) 作为缓存键，避免对象销毁后 id 被重用
+    cache_key = (id(obj), type(obj).__name__)
     with _can_lock:
-        res = _canonical_cache.get(key)
-    if res is not None:
-        return res
+        if (res := _canonical_cache.get(cache_key)) is not None:
+            return res
 
     if isinstance(obj, dict):
         inner = ", ".join(f"{repr(k)}: {_canonical(v)}" for k, v in sorted(obj.items()))
@@ -122,11 +106,11 @@ def _canonical(obj: Any) -> str:
         res = repr(obj)
 
     with _can_lock:
-        _canonical_cache[key] = res
+        _canonical_cache[cache_key] = res
     return res
 
 
-def compute_hash(fn_name: str, inputs: Dict[str, Any], ignore: Set[str] = frozenset()) -> int:
+def compute_hash(fn_name: str, inputs: dict[str, Any], ignore: frozenset[str] = frozenset()) -> int:
     """
     计算节点的唯一标识哈希。
     
@@ -168,7 +152,7 @@ def _render_call(
     inputs: Mapping[str, Any],
     *,
     canonical: bool = False,
-    mapping: Dict["Node", str] | None = None,
+    mapping: dict["Node", str] | None = None,
     ignore: Sequence[str] | None = None,
 ) -> str:
     """渲染函数调用为字符串。
@@ -181,7 +165,7 @@ def _render_call(
         参数名到值的映射
     canonical : bool
         是否使用规范化表示
-    mapping : Dict[Node, str]
+    mapping : dict[Node, str]
         Node 到变量名的映射
     ignore : Sequence[str]
         需要忽略的参数名
@@ -197,6 +181,9 @@ def _render_call(
                 canonical=canonical,
                 ignore=getattr(v.fn, "_node_ignore", ()),
             )
+        # @node.define 装饰过的函数：渲染为函数名
+        if callable(v) and hasattr(v, "_node_sig"):
+            return v.__name__
         return _canonical(v) if canonical else repr(v)
 
     def key_of(v: Any) -> str:
@@ -213,9 +200,9 @@ def _render_call(
         tuple(sorted(ignore or [])),
     )
     with _ren_lock:
-        res = _render_cache.get(key)
-    if res is not None:
-        return res
+        if (res := _render_cache.get(key)) is not None:
+            return res
+
 
     ignore_set = set(ignore or ())
     parts = [f"{k}={render(v)}" for k, v in inputs.items() if k not in ignore_set]
@@ -243,9 +230,7 @@ def _build_graph(
         if node in seen:
             continue
         seen.add(node)
-        hit = False
-        if cache is not None and node.cache:
-            hit, _ = cache.get(node.key)
+        hit = cache is not None and node.cache and cache.get(node.key)[0]
         if hit:
             edges[node] = []
             continue
@@ -269,8 +254,47 @@ class Node:
 
     A Node is a pure data structure that describes a function call with its
     arguments. It does not execute itself; execution is handled by the Runtime.
-    """
 
+    Attributes
+    ----------
+    fn : Callable
+        The function being wrapped by this node.
+    inputs : Dict[str, Any]
+        Mapping of argument names to their values.
+    deps_nodes : List[Node]
+        List of other Node objects that this node depends on.
+    cache : bool
+        Whether caching is enabled for this node.
+    _hash : int
+        Unique identifier based on function name and arguments.
+    _lock : threading.Lock
+        Lock for thread-safe operations.
+    _runtime : Any
+        The associated runtime instance.
+
+    Examples
+    --------
+    >>> @node.define()
+    ... def double(x):
+    ...     return x * 2
+    >>>
+    >>> n = double(5)  # Create a node
+    >>> n.get()        # Execute and get result
+    10
+    >>> n.script       # Get execution script
+    '# hash = ...\\nv0 = double(x=5)'
+
+    Methods
+    -------
+    get()
+        Execute node and return result.
+    delete()
+        Delete cached value.
+    create()
+        Force recompute ignoring cache.
+    script()
+        Return human-readable script.
+    """
     __slots__ = (
         "fn",
         "inputs",
@@ -279,8 +303,10 @@ class Node:
         "_hash",
         "_lock",
         "_runtime",
-        "__dict__",
         "__weakref__",
+        "_order",
+        "_script_lines",
+        "_script",
     )
 
     _hash: int
@@ -289,7 +315,7 @@ class Node:
     def __init__(
         self,
         fn,
-        inputs: Dict[str, Any],
+        inputs: dict[str, Any],
         *,
         cache: bool = True,
         runtime: Any = None,
@@ -300,7 +326,7 @@ class Node:
         ----------
         fn : Callable
             被包装的函数
-        inputs : Dict[str, Any]
+        inputs : dict[str, Any]
             参数名到值的映射（已包含所有默认值）
         cache : bool
             是否启用缓存
@@ -320,21 +346,18 @@ class Node:
                 for item in v:
                     yield from collect_nodes(item)
         
-        self.deps_nodes: List[Node] = list(
+        self.deps_nodes: list[Node] = list(
             node for value in inputs.values() for node in collect_nodes(value)
         )
-
-        # TODO: 循环检测暂时禁用
-        # if any(d is self for d in self.deps_nodes):
-        #     raise ValueError("Cycle detected in DAG")
-
         # 计算 hash（规范化逻辑封装在 compute_hash 中）
-        ignore = set(getattr(fn, "_node_ignore", ()))
+        ignore = frozenset(getattr(fn, "_node_ignore", ()))
         self._hash = compute_hash(fn.__name__, inputs, ignore)
         self._lock = threading.Lock()
 
     def __getstate__(self):
-        return {k: getattr(self, k) for k in self.__slots__ if k not in ("_lock", "_runtime")}
+        # Exclude non-serializable attributes and lazy attributes that may not exist
+        exclude = {"_lock", "_runtime", "__weakref__"}
+        return {k: getattr(self, k) for k in self.__slots__ if k not in exclude and hasattr(self, k)}
 
     def __setstate__(self, state):
         for k, v in state.items():
@@ -361,22 +384,28 @@ class Node:
     def __lt__(self, other: "Node") -> bool:
         return self._hash < other._hash
 
-    @functools.cached_property
-    def script_lines(self) -> List[Tuple[int, str]]:
+
+    @property
+    def script_lines(self) -> list[tuple[int, str]]:
         """Return script lines for this node with simplified variable names."""
+        if hasattr(self, '_script_lines'):
+            return self._script_lines
+
+
         with self._lock:
             order = self.order
             # 为每个函数维护计数器，生成简化变量名
-            fn_counters: Dict[str, int] = {}
-            var_names: Dict[Node, str] = {}
+            from collections import defaultdict
+            fn_counters: dict[str, int] = defaultdict(int)
+            var_names: dict[Node, str] = {}
             
             for node in order:
                 fn_name = node.fn.__name__
-                idx = fn_counters.get(fn_name, 0)
-                fn_counters[fn_name] = idx + 1
+                idx = fn_counters[fn_name]
+                fn_counters[fn_name] += 1
                 var_names[node] = f"{fn_name}_{idx}"
             
-            lines: List[Tuple[int, str]] = []
+            lines: list[tuple[int, str]] = []
             for node in order:
                 var_map = {d: var_names[d] for d in node.deps_nodes}
                 ignore = getattr(node.fn, "_node_ignore", ())
@@ -388,18 +417,29 @@ class Node:
                     ignore=ignore,
                 )
                 lines.append((node._hash, f"{var_names[node]} = {call}"))
+            
+            self._script_lines = lines
             return lines
 
-    @functools.cached_property
-    def order(self) -> List["Node"]:
-        order, _ = _build_graph(self, None)
-        return order
+    @property
+    def order(self) -> list["Node"]:
+        try:
+            return self._order
+        except AttributeError:
+            self._order, _ = _build_graph(self, None)
+            return self._order
 
-    @functools.cached_property
+    @property
     def script(self) -> str:
         """Return human-readable script with hash header."""
+        try:
+            return self._script
+        except AttributeError:
+            pass
+
         body = "\n".join(line for _, line in self.script_lines)
-        return f"# hash = {self._hash:x}\n{body}"
+        self._script = f"# hash = {self._hash:x}\n{body}"
+        return self._script
 
     def _get_runtime(self):
         """Get the runtime for this node, falling back to global."""
@@ -433,17 +473,36 @@ def gather(
 ) -> Node:
     """Aggregate multiple nodes into a single list result.
 
-    ``nodes`` may be passed either as positional arguments or as a single
-    iterable.  The returned node produces a list of each input node's value
-    in the provided order.  ``workers`` controls the concurrent executions
-    of the gather node itself.
+    This function creates a new Node that, when executed, will run all input
+    nodes (potentially in parallel) and return a list of their results in the
+    same order.
+
+    Parameters
+    ----------
+    *nodes : Node | Iterable[Node]
+        Nodes to gather. Can be passed as positional arguments or as a single
+        iterable (list, tuple, generator).
+    workers : int, optional
+        Max concurrency for executing these nodes.
+    cache : bool, optional
+        Whether to cache the gathered result itself. Defaults to True.
+
+    Returns
+    -------
+    Node
+        A node that evaluates to ``List[Any]``.
+
+    Examples
+    --------
+    >>> tasks = [my_task(i) for i in range(5)]
+    >>> all_results = node.gather(tasks).get()
     """
     from .runtime import get_runtime
 
     if len(nodes) == 1 and not isinstance(nodes[0], Node):
         nodes_list = tuple(cast(Iterable[Node], nodes[0]))
     else:
-        nodes_list = cast(Tuple[Node, ...], nodes)
+        nodes_list = cast(tuple[Node, ...], nodes)
 
     if not nodes_list:
         raise ValueError("no nodes provided")
@@ -467,80 +526,94 @@ def gather(
     return _gather(*nodes_list)
 
 
-def map(
-    node_fn: Callable[..., Node],
+def sweep(
+    target: Callable[..., "Node"],
+    config: dict[str, Iterable[Any]],
     *,
     workers: int | None = None,
     cache: bool = True,
-    **iterables: Iterable[Any],
-) -> Node:
-    """Map a node function over parameter iterables.
+    **kwargs: Any,
+) -> "Node":
+    """Scan a node over different configuration values.
 
-    Each keyword argument value is an iterable to map over. When multiple
-    iterables are provided, they are zipped together. The result is a
-    ``gather`` node containing all the mapped nodes.
+    For each combination of config values, sets the global configuration,
+    then calls the target function to create a new Node. The config changes
+    are reflected in parameter defaults through OmegaConf references.
 
     Parameters
     ----------
-    node_fn : Callable
-        A ``@node.define`` decorated function.
+    target : Callable[..., Node]
+        The node-decorated function to call (e.g., ``my_func``, not ``my_func()``).
+    config : dict[str, Iterable[Any]]
+        Mapping of config keys to values to scan over. Keys are dot-separated
+        paths into the global config (e.g., "multiplier" sets ``node.cfg.multiplier``).
     workers : int, optional
-        Concurrency for the resulting gather node.
-    cache : bool
-        Whether to cache the gather result (individual nodes still cache).
-    **iterables
-        Keyword arguments where each value is an iterable. The keys are
-        parameter names to bind.
+        Concurrency limit for the sweep execution.
+    cache : bool, optional
+        Whether to cache the result list. Defaults to True.
+    **kwargs
+        Additional keyword arguments to pass to the target function.
 
     Returns
     -------
     Node
-        A gather node containing all mapped nodes.
+        A node that evaluates to a list of results, one for each config value.
 
     Examples
     --------
-    >>> # Single parameter
-    >>> node.map(process, x=[1, 2, 3])
-    >>> # Equivalent to: gather([process(x=1), process(x=2), process(x=3)])
-
-    >>> # Multiple parameters (zipped)
-    >>> node.map(compare, a=[1, 2], b=[3, 4])
-    >>> # Equivalent to: gather([compare(a=1, b=3), compare(a=2, b=4)])
-
-    >>> # Pass lists as parameter values
-    >>> node.map(process_batch, items=[[1, 2], [3, 4]])
-    >>> # Creates: process_batch(items=[1, 2]), process_batch(items=[3, 4])
+    >>> # Config: base_value.multiplier: ${global_multiplier}
+    >>> @node.define()
+    ... def base_value(x: int, multiplier: int):
+    ...     return x * multiplier
+    >>>
+    >>> # Sweep over different multiplier values
+    >>> results = node.sweep(
+    ...     base_value,  # Pass the function, not base_value()
+    ...     config={"global_multiplier": [1, 2, 3]},
+    ...     x=5,  # Pass required args as kwargs
+    ... ).get()
+    >>> # [5, 10, 15]
     """
-    if not iterables:
-        raise ValueError("map() requires at least one iterable keyword argument")
+    from .runtime import get_runtime
 
-    keys = list(iterables.keys())
-    values = [list(v) for v in iterables.values()]
+    # Convert iterables to lists, validate, and collect lengths in one pass
+    config_lists = {}
+    lengths = {}
+    for k, v in config.items():
+        items = list(v)
+        if not items:
+            raise ValueError(f"Config key '{k}' has empty iterable")
+        config_lists[k] = items
+        lengths[k] = len(items)
 
-    # Check all iterables have the same length
-    lengths = [len(v) for v in values]
-    if len(set(lengths)) > 1:
+    # Check all config values have the same length
+    if len(set(lengths.values())) > 1:
         raise ValueError(
-            f"All iterables must have the same length, got {dict(zip(keys, lengths))}"
+            f"All config iterables must have the same length, got {lengths}"
         )
 
-    if not values[0]:
-        # Empty iterables - return empty gather
-        # Create a dummy node just to get the runtime
-        from .runtime import get_runtime
-        runtime = get_runtime()
+    n_items = next(iter(lengths.values()))
+    runtime = get_runtime()
+    cfg = runtime.config._conf
 
-        @runtime.define(workers=workers, cache=cache)
-        def _empty_gather():
-            return []
+    # Helper to set config value
+    def set_config(key: str, value: Any):
+        parts = key.split(".")
+        obj = cfg
+        for part in parts[:-1]:
+            obj = getattr(obj, part)
+        setattr(obj, parts[-1], value)
 
-        return _empty_gather()
+    # Create a node for each config value
+    nodes = []
+    for i in range(n_items):
+        # Set config values
+        for key, values in config_lists.items():
+            set_config(key, values[i])
+        # Call the target function to create a new Node
+        # The Node's hash will include the current config values via defaults
+        new_node = target(**kwargs)
+        nodes.append(new_node)
 
-    # Build nodes by zipping iterables
-    nodes = [
-        node_fn(**dict(zip(keys, args)))
-        for args in zip(*values)
-    ]
-
-    return gather(nodes, workers=workers, cache=cache)
-
+    # Use gather to collect all results
+    return gather(*nodes, workers=workers, cache=cache)

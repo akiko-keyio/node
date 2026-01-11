@@ -6,7 +6,7 @@ import pickle
 import threading
 from contextlib import nullcontext, suppress
 from pathlib import Path
-from typing import Any, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import joblib  # type: ignore[import]
 from cachetools import LRUCache  # type: ignore[import]
@@ -28,7 +28,7 @@ __all__ = [
 class Cache:
     """Base cache interface."""
 
-    def get(self, key: str) -> Tuple[bool, Any]:
+    def get(self, key: str) -> tuple[bool, Any]:
         raise NotImplementedError
 
     def put(self, key: str, value: Any) -> None:
@@ -87,9 +87,7 @@ class DiskJoblib(Cache):
 
     def _path(self, key: str, ext: str = ".pkl") -> Path:
         """Return the cache file path for ``key``."""
-        parts = key.rsplit("_", 1)
-        fn = parts[0]
-        hash_key = parts[1]
+        fn, hash_key = key.rsplit("_", 1)
         sub = self.root / fn
         sub.mkdir(parents=True, exist_ok=True)
         return sub / (hash_key + ext)

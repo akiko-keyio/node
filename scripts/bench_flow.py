@@ -18,7 +18,7 @@ def build_graph() -> Tuple[Any, Any]:
         return a * b
 
     t0 = time.perf_counter()
-    N = 800
+    N = 400
     print("Starting building graph")
     grid: list[list[Any]] = [[None] * N for _ in range(N)]
     for i in range(N):

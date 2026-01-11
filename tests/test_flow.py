@@ -306,7 +306,7 @@ def test_chaincache_promotion(runtime_factory, tmp_path):
 
 
 def test_parallel_execution(runtime_factory):
-    rt = runtime_factory(executor="thread", default_workers=2)
+    rt = runtime_factory(executor="thread", workers=2)
 
     @rt.define()
     def slow(v):
@@ -329,9 +329,9 @@ def test_parallel_execution(runtime_factory):
 
 
 def test_node_worker_limit(runtime_factory):
-    rt = runtime_factory(executor="thread", default_workers=4)
+    rt = runtime_factory(executor="thread", workers=4)
 
-    @rt.node(workers=1)
+    @rt.define(workers=1)
     def slow(v):
         import time
 
@@ -364,7 +364,7 @@ def test_no_thread_pool_for_single_worker(runtime_factory, monkeypatch, dw, nw):
 
     monkeypatch.setattr(node_module, "ThreadPoolExecutor", fail_pool)
 
-    rt = runtime_factory(executor="thread", default_workers=dw)
+    rt = runtime_factory(executor="thread", workers=dw)
 
     @rt.define(workers=nw)
     def slow(v):
@@ -376,7 +376,7 @@ def test_no_thread_pool_for_single_worker(runtime_factory, monkeypatch, dw, nw):
 
 
 def test_local_node_runs_in_main_thread(runtime_factory):
-    rt = runtime_factory(executor="thread", default_workers=2)
+    rt = runtime_factory(executor="thread", workers=2)
 
     @rt.define(local=True)
     def which_thread() -> str:

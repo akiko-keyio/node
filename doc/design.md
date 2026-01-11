@@ -341,19 +341,7 @@ result = gather([
 # → [result1, result2, result3]
 ```
 
-#### map：批量映射
-
-```python
-from node import map as node_map
-
-# 单参数映射
-result = node_map(process, x=[1, 2, 3]).get()
-# 等价于: gather([process(x=1), process(x=2), process(x=3)])
-
-# 多参数 zip 映射
-result = node_map(compare, a=[1, 2], b=[3, 4]).get()
-# 等价于: gather([compare(a=1, b=3), compare(a=2, b=4)])
-```
+适用于聚合**不同函数**或**不同参数组合**的节点。
 
 ---
 

@@ -10,9 +10,10 @@ import threading
 import time
 import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import nullcontext
+
 from graphlib import TopologicalSorter
-from typing import Any, Callable, Dict, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 from weakref import WeakValueDictionary
 
 from loky import ProcessPoolExecutor
@@ -31,7 +32,7 @@ __all__ = [
 ]
 
 # Singleton instance
-_runtime: Optional["Runtime"] = None
+_runtime: "Runtime" | None = None
 _runtime_lock = threading.Lock()
 
 
@@ -135,21 +136,12 @@ class Runtime:
         cache: Cache | None = None,
         executor: str = "thread",
         workers: int = 4,
-        default_workers: int | None = None,  # Backwards compat alias
         reporter: Any = None,
         continue_on_error: bool = True,
         validate: bool = True,
     ):
-        # Handle backwards compat: default_workers -> workers
-        if default_workers is not None:
-            workers = default_workers
         # Config
-        if isinstance(config, str):
-            self.config = Config(config)
-        elif isinstance(config, Config):
-            self.config = config
-        else:
-            self.config = Config(config)
+        self.config = config if isinstance(config, Config) else Config(config)
 
         self._initial_config = Config(
             OmegaConf.create(self.config._conf),
@@ -188,10 +180,17 @@ class Runtime:
         self.on_flow_end: Callable[[Node, float, int, int], None] | None = None
 
 
-
     def reset_config(self) -> None:
         """Restore the configuration used at initialization."""
         self.config.copy_from(self._initial_config)
+
+    def _cleanup_uncached(self, root: Node, order: list[Node], cache_root: bool) -> None:
+        """Delete cache entries for nodes that should not be cached."""
+        if not (cache_root and root.cache):
+            self.cache.delete(root.key)
+        for n in order:
+            if not n.cache and n is not root:
+                self.cache.delete(n.key)
 
     def define(
         self,
@@ -228,25 +227,26 @@ class Runtime:
                     stacklevel=2,
                 )
             
-            setattr(fn, "_node_ignore", ignore_set)
             sig_obj = inspect.signature(fn)
-            setattr(fn, "_node_sig", sig_obj)
-            setattr(
-                fn,
-                "_node_workers",
-                workers if workers is not None else self.workers,
-            )
-            setattr(fn, "_node_local", local)
+            node_attrs = {
+                "_node_ignore": ignore_set,
+                "_node_sig": sig_obj,
+                "_node_workers": workers if workers is not None else self.workers,
+                "_node_local": local,
+            }
+
+            for k, v in node_attrs.items():
+                setattr(fn, k, v)
 
             wrapped = (
                 validate_arguments(fn, config={"arbitrary_types_allowed": True})
                 if self.validate
                 else fn
             )
-            setattr(wrapped, "_node_ignore", ignore_set)
-            setattr(wrapped, "_node_sig", sig_obj)
-            setattr(wrapped, "_node_workers", getattr(fn, "_node_workers"))
-            setattr(wrapped, "_node_local", getattr(fn, "_node_local"))
+
+            if wrapped is not fn:
+                for k, v in node_attrs.items():
+                    setattr(wrapped, k, v)
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
@@ -264,12 +264,18 @@ class Runtime:
                 return node
 
             wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
+            
+            # Add sweep method to wrapper for convenient access: process.sweep(...)
+            from .core import sweep as core_sweep
+            def wrapper_sweep(config, *, workers=None, cache=True, **kwargs):
+                return core_sweep(wrapper, config=config, workers=workers, cache=cache, **kwargs)
+            wrapper.sweep = wrapper_sweep
+            
             return wrapper
 
         return deco
 
-    # Alias for compatibility
-    node = define
+
 
     def _resolve(self, v):
         """递归解析参数值，将 Node 替换为其缓存的计算结果。"""
@@ -294,6 +300,33 @@ class Runtime:
         if sem is not None:
             sem.release()
 
+    def _bind_args(self, node: Node, resolved_args: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+        """Bind resolved arguments to function signature."""
+        sig = getattr(node.fn, "_node_sig", inspect.signature(node.fn))
+        args = []
+        kwargs = {}
+        for name, param in sig.parameters.items():
+            if name not in resolved_args:
+                continue
+            if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                args.extend(resolved_args[name])
+            elif param.kind == inspect.Parameter.VAR_KEYWORD:
+                kwargs.update(resolved_args[name])
+            else:
+                kwargs[name] = resolved_args[name]
+        return args, kwargs
+
+    def _save_result(self, node: Node, val: Any, start: float) -> None:
+        """Save result to cache and trigger callbacks after successful execution."""
+        self.cache.put(node.key, val)
+        if self._can_save:
+            self.cache.save_script(node)
+        dur = time.perf_counter() - start
+        if self.on_node_end is not None:
+            self.on_node_end(node, dur, False, False)
+        with self._lock:
+            self._exec_count += 1
+
     def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
         if sem is not None:
             sem.acquire()
@@ -313,25 +346,13 @@ class Runtime:
             return val
 
         # 从 inputs 解析参数并调用函数
-        # 需要处理 VAR_POSITIONAL (*args) 参数
         resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
-        sig = getattr(n.fn, "_node_sig", inspect.signature(n.fn))
-        args = []
-        kwargs = {}
-        for name, param in sig.parameters.items():
-            if name not in resolved_args:
-                continue
-            if param.kind == inspect.Parameter.VAR_POSITIONAL:
-                args.extend(resolved_args[name])
-            elif param.kind == inspect.Parameter.VAR_KEYWORD:
-                kwargs.update(resolved_args[name])
-            else:
-                kwargs[name] = resolved_args[name]
+        args, kwargs = self._bind_args(n, resolved_args)
         try:
             val = n.fn(*args, **kwargs)
         except Exception as e:
+            logger.error("node {} failed for {}", n.key, e, exc_info=True)
             if self.continue_on_error:
-                logger.error(f"node {n.key} failed for {e}", exc_info=True)
                 self._failed.add(n.key)
                 dur = time.perf_counter() - start
                 if self.on_node_end is not None:
@@ -344,14 +365,7 @@ class Runtime:
                     sem.release()
                 raise
         else:
-            self.cache.put(n.key, val)
-            if self._can_save:
-                self.cache.save_script(n)
-        dur = time.perf_counter() - start
-        if self.on_node_end is not None:
-            self.on_node_end(n, dur, False, False)
-        with self._lock:
-            self._exec_count += 1
+            self._save_result(n, val, start)
         if sem is not None:
             sem.release()
         return val
@@ -383,7 +397,6 @@ class Runtime:
                 self.on_flow_end(root, time.perf_counter() - t0, 0, 0)
             return val
 
-        t0 = time.perf_counter()
         order, edges = _build_graph(root, self.cache)
 
         max_node_workers = 1
@@ -401,34 +414,18 @@ class Runtime:
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
             result = self.cache.get(root.key)[1]
-
-            if not (cache_root and root.cache):
-                self.cache.delete(root.key)
-            for n in order:
-                if not n.cache and n is not root:
-                    self.cache.delete(n.key)
+            self._cleanup_uncached(root, order, cache_root)
 
             return result
 
         orig_start = self.on_node_start
         orig_end = self.on_node_end
 
-        def start_cb(n):
-            if orig_start is not None:
-                orig_start(n)
-
-        def end_cb(n, dur, cached, failed):
-            if orig_end is not None:
-                orig_end(n, dur, cached, failed)
-
-        self.on_node_start = start_cb
-        self.on_node_end = end_cb
-
         pool_cls = (
             ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
         )
         proc_q = None
-        pool_kwargs: Dict[str, Any] = {"max_workers": self.workers}
+        pool_kwargs: dict[str, Any] = {"max_workers": self.workers}
         if self.executor == "process":
             from multiprocessing import Queue
             from .reporters import _set_process_queue, _worker_init
@@ -440,7 +437,7 @@ class Runtime:
         ts = TopologicalSorter(edges)
         ts.prepare()
 
-        sems: Dict[Callable[..., Any], threading.Semaphore] = {}
+        sems: dict[Callable[..., Any], threading.Semaphore] = {}
         for node in order:
             workers = getattr(node.fn, "_node_workers", 1)
             if workers == -1:
@@ -480,19 +477,7 @@ class Runtime:
                         ts.done(node)
                         return
                     resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
-                    # 解包 VAR_POSITIONAL 和 VAR_KEYWORD
-                    sig = getattr(node.fn, "_node_sig", inspect.signature(node.fn))
-                    args = []
-                    kwargs = {}
-                    for name, param in sig.parameters.items():
-                        if name not in resolved_bound:
-                            continue
-                        if param.kind == inspect.Parameter.VAR_POSITIONAL:
-                            args.extend(resolved_bound[name])
-                        elif param.kind == inspect.Parameter.VAR_KEYWORD:
-                            kwargs.update(resolved_bound[name])
-                        else:
-                            kwargs[name] = resolved_bound[name]
+                    args, kwargs = self._bind_args(node, resolved_bound)
                     sem = sems[node.fn]
                     sem.acquire()
                     fut = pool.submit(_call_fn, node.fn, args, kwargs, node.key)
@@ -533,14 +518,7 @@ class Runtime:
                                 sem.release()
                                 raise
                         else:
-                            self.cache.put(node.key, val)
-                            if self._can_save:
-                                self.cache.save_script(node)
-                        dur = time.perf_counter() - start
-                        if self.on_node_end is not None:
-                            self.on_node_end(node, dur, False, False)
-                        with self._lock:
-                            self._exec_count += 1
+                            self._save_result(node, val, start)
                         sem.release()
                     ts.done(node)
                 for n in ts.get_ready():
@@ -556,11 +534,7 @@ class Runtime:
             self.on_flow_end(root, wall, self._exec_count, len(self._failed))
         result = self.cache.get(root.key)[1]
 
-        if not (cache_root and root.cache):
-            self.cache.delete(root.key)
-        for n in order:
-            if not n.cache and n is not root:
-                self.cache.delete(n.key)
+        self._cleanup_uncached(root, order, cache_root)
 
         return result
 

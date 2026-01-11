@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, TYPE_CHECKING, cast
+from typing import Any, TYPE_CHECKING, cast
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -23,7 +24,7 @@ class Config:
 
     def __init__(
         self,
-        mapping: Mapping[str, Dict[str, Any]] | DictConfig | str | Path | None = None,
+        mapping: Mapping[str, dict[str, Any]] | DictConfig | str | Path | None = None,
         *,
         cache_nodes: bool = False,
     ) -> None:
@@ -42,12 +43,7 @@ class Config:
         else:
             self._conf = OmegaConf.create(mapping or {})
         self._cache_nodes = cache_nodes
-        self._nodes: Dict[str, "Node"] = {}
-
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "Config":
-        """Create Config from a YAML file."""
-        return cls(OmegaConf.load(str(path)))
+        self._nodes: dict[str, "Node"] = {}
 
     def _resolve_with_presets(self, cfg: DictConfig) -> DictConfig:
         """Resolve a config that may contain _presets_.
@@ -108,11 +104,7 @@ class Config:
             return self._nodes[name]
         cfg = self._conf[name]
         target = cfg.get("_target_", name)
-        if isinstance(target, str) and target.startswith("${") and target.endswith("}"):
-            fn_node = self._build_node(target[2:-1], runtime)
-            fn = fn_node.fn
-        else:
-            fn = self._locate(str(target))
+        fn = self._locate(str(target))
         params = {
             k: self._resolve_value(v, runtime)
             for k, v in OmegaConf.to_container(cfg, resolve=False).items()
@@ -123,7 +115,7 @@ class Config:
             self._nodes[name] = node
         return node
 
-    def defaults(self, fn_name: str, *, runtime: Any | None = None) -> Dict[str, Any]:
+    def defaults(self, fn_name: str, *, runtime: Any | None = None) -> dict[str, Any]:
         node_cfg = self._conf.get(fn_name)
         if node_cfg is None:
             return {}
@@ -132,8 +124,8 @@ class Config:
         node_cfg = self._resolve_with_presets(node_cfg)
         
         if runtime is None:
-            return cast(Dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
-        result: Dict[str, Any] = {}
+            return cast(dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
+        result: dict[str, Any] = {}
         for k, v in OmegaConf.to_container(node_cfg, resolve=False).items():
             if k == "_target_":
                 continue

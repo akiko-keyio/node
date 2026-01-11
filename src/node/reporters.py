@@ -1,14 +1,14 @@
 from __future__ import annotations
 # coverage: ignore-file
 
-from typing import Dict, Set, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from contextlib import nullcontext
 import time
 import sys
 import threading
 from queue import SimpleQueue, Empty
 from multiprocessing import Queue
-from typing import Iterable, Generator, Any
+from collections.abc import Iterable, Generator
 from rich.progress import (
     Progress,
     BarColumn,
@@ -122,9 +122,9 @@ class _RichReporterCtx:
         self.q: SimpleQueue = SimpleQueue()
         
         # Stats by function name
-        self.stats: Dict[str, _TaskStats] = {}
+        self.stats: dict[str, _TaskStats] = {}
         # Order of appearance for function names to maintain stable sort
-        self.task_order: List[str] = []
+        self.task_order: list[str] = []
         
         self.exec_start: float | None = None
         self.exec_end: float | None = None
@@ -133,12 +133,12 @@ class _RichReporterCtx:
         self.proc_queue: Queue | None = None
         
         # Internal tracking
-        self.node_to_fn_name: Dict[str, str] = {}
-        self.running_nodes: Set[str] = set()
+        self.node_to_fn_name: dict[str, str] = {}
+        self.running_nodes: set[str] = set()
         
         # Restore tracking attributes for track() support
-        self.tracks: Dict[str, tuple[Progress, int, str]] = {}
-        self.node_track_ids: Dict[str, Set[str]] = {}
+        self.tracks: dict[str, tuple[Progress, int, str]] = {}
+        self.node_track_ids: dict[str, set[str]] = {}
 
     def _make_progress(self) -> Progress:
         """Return a progress instance configured for single-line display."""
@@ -210,9 +210,7 @@ class _RichReporterCtx:
         final_render = self._render(final=True)
         self.live.update(final_render, refresh=True)
         self.live.__exit__(exc_type, exc, tb)
-        if IN_JUPYTER:
-            pass
-        else:
+        if not IN_JUPYTER:
             self.live.console.print(final_render)
         self.runtime.on_node_start = self.orig_start
         self.runtime.on_node_end = self.orig_end
@@ -308,9 +306,6 @@ class _RichReporterCtx:
                 if k in self.running_nodes:
                     self.running_nodes.remove(k)
                 
-                
-                
-                
                 fn_name = self.node_to_fn_name.get(k)
                 if fn_name:
                     stats = self.stats[fn_name]
@@ -350,10 +345,7 @@ class _RichReporterCtx:
                             ids.discard(tid)
                             if not ids:
                                 self.node_track_ids.pop(node_key, None)
-            elif typ == "flow":
-                wall = rest[0]
-                # flow end handler if needed
-                pass
+
 
     # --------------------------------------------------------------
     def _render(self, final: bool = False) -> Group:
@@ -433,12 +425,5 @@ def track(
     if ctx is not None:
         yield from ctx.track(sequence, description, total)
         return
-    proc_q = getattr(_track_ctx, "proc_queue", _process_queue)
-    node_key = getattr(_track_ctx, "node", "")
-    if proc_q is not None and node_key:
-        for item in sequence:
-            yield item
-    else:
-        from rich.progress import track as _track
-
-        yield from _track(sequence, description=description, total=total)
+    from rich.progress import track as _track
+    yield from _track(sequence, description=description, total=total)

@@ -1,21 +1,37 @@
 """Node - A lightweight DAG engine with caching and parallel execution.
 
-Usage:
-    import node
+Node is a lightweight Directed Acyclic Graph (DAG) computation framework with automatic caching and parallel execution capabilities.
 
-    node.configure(workers=4)  # Optional, uses defaults if not called
+Quick Start
+-----------
+>>> import node
+>>> 
+>>> # Define a computation node
+>>> @node.define()
+... def add(x: int, y: int) -> int:
+...     return x + y
+>>> 
+>>> # Build and execute DAG
+>>> result = add(1, 2).get()
+>>> print(result)
+3
 
-    @node.define
-    def my_task(x, y):
-        return x + y
+Configuration
+-------------
+>>> node.configure(workers=4, cache_root="./cache")
 
-    result = node.run(my_task(1, 2))
+See Also
+--------
+node.define : Decorate a function to create a Node.
+node.run : Execute the entire DAG.
+node.gather : Aggregate multiple nodes.
 """
 
-from typing import Optional, Callable, Generator, Any
+from collections.abc import Callable, Generator
+from typing import Any
 
 # Core exports
-from .core import Node, gather, map
+from .core import Node, gather, sweep
 from .cache import Cache, ChainCache, MemoryLRU, DiskJoblib
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
@@ -23,7 +39,27 @@ from .logger import logger, console
 
 # Module-level API that delegates to singleton Runtime
 def run(root: Node, *, reporter=None, cache_root: bool = True):
-    """Run the DAG rooted at ``root``."""
+    """Run the DAG rooted at ``root``.
+    
+    Parameters
+    ----------
+    root : Node
+        The solution node (root of the DAG) to execute.
+    reporter : Reporter, optional
+        Progress reporter instance.
+    cache_root : bool, optional
+        Whether to cache the result of the root node itself. 
+        Defaults to True.
+
+    Returns
+    -------
+    Any
+        The result of the computation.
+
+    Examples
+    --------
+    >>> result = node.run(my_task(1, 2))
+    """
     return get_runtime().run(root, reporter=reporter, cache_root=cache_root)
 
 
@@ -38,14 +74,27 @@ def define(
 
     Parameters
     ----------
-    ignore:
+    ignore : list[str], optional
         Argument names excluded from the cache key.
-    workers:
+    workers : int, optional
         Maximum concurrency for this function. ``-1`` uses all cores.
-    cache:
-        Whether to cache the result.
-    local:
-        Execute directly in the caller thread, bypassing any executor.
+    cache : bool, optional
+        Whether to cache the result. Defaults to True.
+    local : bool, optional
+        Execute directly in the caller thread, bypassing any executor. 
+        Defaults to False.
+
+    Returns
+    -------
+    Callable
+        A decorator that converts the function into a Node factory.
+
+    Examples
+    --------
+    >>> @node.define(workers=2)
+    ... def slow_task(x):
+    ...     time.sleep(1)
+    ...     return x
     """
     return get_runtime().define(ignore=ignore, workers=workers, cache=cache, local=local)
 
@@ -69,12 +118,11 @@ class _CfgProxy:
 # Module-level config proxy
 cfg = _CfgProxy()
 
-# Backwards compatibility
-Flow = Runtime
+
 
 # Optional rich dependency
-track: Optional[Callable[..., Generator[Any, None, None]]] = None
-RichReporter: Optional[type] = None
+track: Callable[..., Generator[Any, None, None]] | None = None
+RichReporter: type | None = None
 
 try:
     from .reporters import RichReporter as _RichReporter, track as _track
@@ -90,7 +138,7 @@ __all__ = [
     "define",
     "run",
     "gather",
-    "map",
+    "sweep",
     "reset",
     # Core classes
     "Node",
@@ -103,8 +151,6 @@ __all__ = [
     # Config
     "Config",
     "cfg",
-    # Backwards compatibility
-    "Flow",
     # Optional
     "RichReporter",
     "track",

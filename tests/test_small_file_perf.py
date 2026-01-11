@@ -8,7 +8,7 @@ from node import ChainCache, DiskJoblib, Runtime, MemoryLRU, gather
 
 def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
     cache = ChainCache([MemoryLRU(), DiskJoblib(tmp_path, small_file=small_file)])
-    rt = Runtime(cache=cache, executor="thread", default_workers=8, reporter=None)
+    rt = Runtime(cache=cache, executor="thread", workers=8, reporter=None)
     rt.reporter = None
 
     @rt.define()
