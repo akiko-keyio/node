@@ -28,16 +28,39 @@ __all__ = [
 class Cache:
     """Base cache interface."""
 
-    def get(self, key: str) -> tuple[bool, Any]:
+    def get(self, fn_name: str, hash_value: int) -> tuple[bool, Any]:
+        """Get a cached value.
+        
+        Args:
+            fn_name: Function name.
+            hash_value: Node hash value.
+            
+        Returns:
+            A tuple of (hit, value).
+        """
         raise NotImplementedError
 
-    def put(self, key: str, value: Any) -> None:
+    def put(self, fn_name: str, hash_value: int, value: Any) -> None:
+        """Store a value in the cache.
+        
+        Args:
+            fn_name: Function name.
+            hash_value: Node hash value.
+            value: Value to cache.
+        """
         raise NotImplementedError
 
-    def delete(self, key: str) -> None:
+    def delete(self, fn_name: str, hash_value: int) -> None:
+        """Delete a cached value.
+        
+        Args:
+            fn_name: Function name.
+            hash_value: Node hash value.
+        """
         raise NotImplementedError
 
     def save_script(self, node: "Node") -> None:
+        """Save the node's script representation."""
         pass
 
 
@@ -45,22 +68,22 @@ class MemoryLRU(Cache):
     """Thread-safe in-memory LRU cache."""
 
     def __init__(self, maxsize: int = 512):
-        self._lru: LRUCache[str, Any] = LRUCache(maxsize=maxsize)
+        self._lru: LRUCache[int, Any] = LRUCache(maxsize=maxsize)
         self._lock = threading.Lock()
 
-    def get(self, key: str):
+    def get(self, fn_name: str, hash_value: int):
         with self._lock:
-            if key in self._lru:
-                return True, self._lru[key]
+            if hash_value in self._lru:
+                return True, self._lru[hash_value]
         return False, None
 
-    def put(self, key: str, value: Any):
+    def put(self, fn_name: str, hash_value: int, value: Any):
         with self._lock:
-            self._lru[key] = value
+            self._lru[hash_value] = value
 
-    def delete(self, key: str) -> None:
+    def delete(self, fn_name: str, hash_value: int) -> None:
         with self._lock:
-            self._lru.pop(key, None)
+            self._lru.pop(hash_value, None)
 
 
 class DiskJoblib(Cache):
@@ -85,15 +108,23 @@ class DiskJoblib(Cache):
         self.lock = lock
         self.small_file = small_file
 
-    def _path(self, key: str, ext: str = ".pkl") -> Path:
-        """Return the cache file path for ``key``."""
-        fn, hash_key = key.rsplit("_", 1)
-        sub = self.root / fn
+    def _path(self, fn_name: str, hash_value: int, ext: str = ".pkl") -> Path:
+        """Return the cache file path.
+        
+        Args:
+            fn_name: Function name.
+            hash_value: Node hash value.
+            ext: File extension.
+            
+        Returns:
+            Path to the cache file.
+        """
+        sub = self.root / fn_name
         sub.mkdir(parents=True, exist_ok=True)
-        return sub / (hash_key + ext)
+        return sub / (f"{hash_value:x}" + ext)
 
-    def get(self, key: str):
-        p = self._path(key)
+    def get(self, fn_name: str, hash_value: int):
+        p = self._path(fn_name, hash_value)
         if not p.exists():
             return False, None
 
@@ -121,8 +152,8 @@ class DiskJoblib(Cache):
             path.with_suffix(".py").unlink()
         return False, None
 
-    def put(self, key: str, value: Any):
-        p = self._path(key)
+    def put(self, fn_name: str, hash_value: int, value: Any):
+        p = self._path(fn_name, hash_value)
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else nullcontext()
         with ctx:
@@ -133,15 +164,15 @@ class DiskJoblib(Cache):
             else:
                 joblib.dump(value, p)
 
-    def delete(self, key: str) -> None:
+    def delete(self, fn_name: str, hash_value: int) -> None:
         for ext in (".pkl", ".py"):
-            p = self._path(key, ext)
+            p = self._path(fn_name, hash_value, ext)
             if p.exists():
                 with suppress(OSError):
                     p.unlink()
 
     def save_script(self, node: "Node"):
-        p = self._path(node.key, ".py")
+        p = self._path(node.fn.__name__, node._hash, ".py")
         p.write_text(repr(node) + "\n")
 
 
@@ -152,23 +183,23 @@ class ChainCache(Cache):
         self.caches = list(caches)
         self._lock = threading.Lock()
 
-    def get(self, key: str):
+    def get(self, fn_name: str, hash_value: int):
         with self._lock:
             for i, c in enumerate(self.caches):
-                hit, val = c.get(key)
+                hit, val = c.get(fn_name, hash_value)
                 if hit:
                     for earlier in self.caches[:i]:
-                        earlier.put(key, val)
+                        earlier.put(fn_name, hash_value, val)
                     return True, val
         return False, None
 
-    def put(self, key: str, value: Any):
+    def put(self, fn_name: str, hash_value: int, value: Any):
         for c in self.caches:
-            c.put(key, value)
+            c.put(fn_name, hash_value, value)
 
-    def delete(self, key: str) -> None:
+    def delete(self, fn_name: str, hash_value: int) -> None:
         for c in self.caches:
-            c.delete(key)
+            c.delete(fn_name, hash_value)
 
     def save_script(self, node: "Node"):
         for c in self.caches:

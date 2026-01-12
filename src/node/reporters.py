@@ -184,7 +184,7 @@ class _RichReporterCtx:
         order, _ = _build_graph(self.root, self.runtime.cache)
         for node in order:
             fn_name = node.fn.__name__
-            self.node_to_fn_name[node.key] = fn_name
+            self.node_to_fn_name[node._hash] = fn_name
             if fn_name not in self.stats:
                 self.stats[fn_name] = _TaskStats(0)
                 self.task_order.append(fn_name)
@@ -231,20 +231,20 @@ class _RichReporterCtx:
             background_color="default",
         ).highlight(call)
         label.rstrip()
-        self.q.put(("start", n.key, label, time.perf_counter()))
+        self.q.put(("start", n._hash, label, time.perf_counter()))
         _track_ctx.ctx = self
-        _track_ctx.node = n.key
-        self.current_node = n.key
+        _track_ctx.node = n._hash
+        self.current_node = n._hash
 
         if self.orig_start:
             self.orig_start(n)
 
     def _end(self, n: Node, dur: float, cached: bool, failed: bool) -> None:
-        self.q.put(("end", n.key, dur, cached, failed))
+        self.q.put(("end", n._hash, dur, cached, failed))
         if getattr(_track_ctx, "ctx", None) is self:
             _track_ctx.ctx = None
             _track_ctx.node = None
-        ids = self.node_track_ids.get(n.key)
+        ids = self.node_track_ids.get(n._hash)
         if ids:
             for tid in list(ids):
                 self.q.put(("track_end", tid))

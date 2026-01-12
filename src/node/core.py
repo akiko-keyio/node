@@ -4,14 +4,10 @@ from __future__ import annotations
 
 
 import hashlib
-import inspect
-import threading
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from graphlib import TopologicalSorter
 from typing import Any, TYPE_CHECKING, cast
-
-from cachetools import LRUCache
 
 if TYPE_CHECKING:
     from .cache import Cache
@@ -22,26 +18,25 @@ __all__ = [
     "sweep",
 ]
 
-# Global caches & locks for canonical/render
-_can_lock = threading.Lock()
-_ren_lock = threading.Lock()
-_canonical_cache: LRUCache[tuple[int, str], str] = LRUCache(maxsize=4096)
-_render_cache: LRUCache[tuple, str] = LRUCache(maxsize=2048)
 
 def _is_safe_type(obj: Any, depth: int = 0) -> tuple[bool, str]:
-    """检查对象是否有稳定的规范化表示。
+    """Check if an object has a stable canonical representation.
     
-    仅检查两种危险情况：
-    1. 嵌套过深（可能导致无限递归）
-    2. 字典键不是简单类型
+    Only checks two dangerous cases:
+    1. Nested too deeply (may cause infinite recursion)
+    2. Dict keys are not simple types
     
+    Args:
+        obj: The object to check.
+        depth: Current recursion depth.
+        
     Returns:
-        (is_safe, reason): 是否安全及原因
+        A tuple of (is_safe, reason).
     """
     if depth > 10:
         return False, "nested too deeply"
     
-    # 递归检查容器类型
+    # Recursively check container types
     if isinstance(obj, (list, tuple)):
         for item in obj:
             safe, reason = _is_safe_type(item, depth + 1)
@@ -66,17 +61,17 @@ def _is_safe_type(obj: Any, depth: int = 0) -> tuple[bool, str]:
 def _canonical(obj: Any) -> str:
     """Convert an object into a deterministic string representation."""
     if isinstance(obj, Node):
-        return obj.key
+        return f"{obj.fn.__name__}_{obj._hash:x}"
     
-    # @node.define 装饰过的函数：用函数名作为规范表示
+    # Functions decorated with @node.define: use function name as canonical form
     if callable(obj) and hasattr(obj, "_node_sig"):
         return f"NodeFactory:{obj.__name__}"
     
-    # 普通函数/方法：用 __qualname__ 避免内存地址
+    # Regular functions/methods: use __qualname__ to avoid memory address
     if callable(obj) and hasattr(obj, "__qualname__"):
         return f"Func:{obj.__qualname__}"
 
-    # 类型安全检查
+    # Type safety check
     safe, reason = _is_safe_type(obj)
     if not safe:
         warnings.warn(
@@ -87,88 +82,71 @@ def _canonical(obj: Any) -> str:
             stacklevel=4,
         )
 
-    # 使用 (id, type_name) 作为缓存键，避免对象销毁后 id 被重用
-    cache_key = (id(obj), type(obj).__name__)
-    with _can_lock:
-        if (res := _canonical_cache.get(cache_key)) is not None:
-            return res
-
     if isinstance(obj, dict):
         inner = ", ".join(f"{repr(k)}: {_canonical(v)}" for k, v in sorted(obj.items()))
-        res = "{" + inner + "}"
+        return "{" + inner + "}"
     elif isinstance(obj, (list, tuple)):
         inner = ", ".join(_canonical(v) for v in obj)
-        res = "[" + inner + "]" if isinstance(obj, list) else "(" + inner + ")"
+        return "[" + inner + "]" if isinstance(obj, list) else "(" + inner + ")"
     elif isinstance(obj, set):
         inner = ", ".join(_canonical(v) for v in sorted(obj))
-        res = "{" + inner + "}"
+        return "{" + inner + "}"
     else:
-        res = repr(obj)
-
-    with _can_lock:
-        _canonical_cache[cache_key] = res
-    return res
+        return repr(obj)
 
 
-def compute_hash(fn_name: str, inputs: dict[str, Any], ignore: frozenset[str] = frozenset()) -> int:
-    """
-    计算节点的唯一标识哈希。
+def compute_node_identity(
+    fn_name: str, 
+    inputs: dict[str, Any], 
+    ignore: frozenset[str] = frozenset()
+) -> tuple[int, tuple[tuple[str, str], ...]]:
+    """Compute unique node identity hash and canonical inputs.
     
-    内部对参数进行规范化：
-    - Node 参数用其 hash 表示
-    - 其他参数用 _canonical 转为确定性字符串
-    - 按参数名排序保证跨运行确定性
+    Normalizes parameters internally:
+    - Node parameters use their hash
+    - Other parameters use _canonical for deterministic string representation
+    - Sorted by parameter name for cross-run determinism
     
-    Parameters
-    ----------
-    fn_name : str
-        函数名
-    inputs : Dict[str, Any]
-        参数名到值的映射
-    ignore : Set[str]
-        需要忽略的参数名（不参与 hash 计算）
+    Args:
+        fn_name: Function name.
+        inputs: Mapping of parameter names to values.
+        ignore: Parameter names to exclude from hash computation.
         
-    Returns
-    -------
-    int
-        12 位 hex 对应的整数 hash
+    Returns:
+        A tuple of (64-bit hash, canonical inputs tuple).
     """
     canonical_inputs = tuple(
         sorted(
-            (k, f"{hash(v):012x}" if isinstance(v, Node) else _canonical(v))
+            (k, f"{hash(v):016x}" if isinstance(v, Node) else _canonical(v))
             for k, v in inputs.items()
             if k not in ignore
         )
     )
     hash_source = (fn_name, canonical_inputs)
-    return int(
-        hashlib.blake2b(repr(hash_source).encode(), digest_size=6).hexdigest(),
+    hash_value = int(
+        hashlib.blake2b(repr(hash_source).encode(), digest_size=8).hexdigest(),
         16
     )
+    return hash_value, canonical_inputs
 
 
 def _render_call(
     fn: Callable,
     inputs: Mapping[str, Any],
     *,
-    canonical: bool = False,
     mapping: dict["Node", str] | None = None,
     ignore: Sequence[str] | None = None,
 ) -> str:
-    """渲染函数调用为字符串。
+    """Render a function call as a string.
 
-    Parameters
-    ----------
-    fn : Callable
-        函数对象
-    inputs : Mapping[str, Any]
-        参数名到值的映射
-    canonical : bool
-        是否使用规范化表示
-    mapping : dict[Node, str]
-        Node 到变量名的映射
-    ignore : Sequence[str]
-        需要忽略的参数名
+    Args:
+        fn: The function object.
+        inputs: Mapping of parameter names to values.
+        mapping: Mapping of Node to variable names.
+        ignore: Parameter names to exclude from rendering.
+        
+    Returns:
+        A string representation of the function call.
     """
 
     def render(v: Any) -> str:
@@ -178,39 +156,16 @@ def _render_call(
             return _render_call(
                 v.fn,
                 v.inputs,
-                canonical=canonical,
                 ignore=getattr(v.fn, "_node_ignore", ()),
             )
-        # @node.define 装饰过的函数：渲染为函数名
+        # Functions decorated with @node.define: render as function name
         if callable(v) and hasattr(v, "_node_sig"):
             return v.__name__
-        return _canonical(v) if canonical else repr(v)
-
-    def key_of(v: Any) -> str:
-        if isinstance(v, Node):
-            return v.key
-        return repr(v)
-
-    # 缓存 key 基于 inputs
-    key = (
-        fn.__qualname__,
-        canonical,
-        tuple(sorted((k, key_of(v)) for k, v in inputs.items())),
-        tuple(sorted((d.key, v) for d, v in mapping.items())) if mapping else None,
-        tuple(sorted(ignore or [])),
-    )
-    with _ren_lock:
-        if (res := _render_cache.get(key)) is not None:
-            return res
-
+        return _canonical(v)
 
     ignore_set = set(ignore or ())
     parts = [f"{k}={render(v)}" for k, v in inputs.items() if k not in ignore_set]
-    res = f"{fn.__name__}({', '.join(parts)})"
-
-    with _ren_lock:
-        _render_cache[key] = res
-    return res
+    return f"{fn.__name__}({', '.join(parts)})"
 
 
 def _build_graph(
@@ -230,7 +185,7 @@ def _build_graph(
         if node in seen:
             continue
         seen.add(node)
-        hit = cache is not None and node.cache and cache.get(node.key)[0]
+        hit = cache is not None and node.cache and cache.get(node.fn.__name__, node._hash)[0]
         if hit:
             edges[node] = []
             continue
@@ -239,14 +194,6 @@ def _build_graph(
         stack.extend(deps)
     order = list(TopologicalSorter(edges).static_order())
     return order, edges
-
-
-def clear_caches() -> None:
-    """Clear global helper caches."""
-    with _can_lock:
-        _canonical_cache.clear()
-    with _ren_lock:
-        _render_cache.clear()
 
 
 class Node:
@@ -267,10 +214,6 @@ class Node:
         Whether caching is enabled for this node.
     _hash : int
         Unique identifier based on function name and arguments.
-    _lock : threading.Lock
-        Lock for thread-safe operations.
-    _runtime : Any
-        The associated runtime instance.
 
     Examples
     --------
@@ -279,21 +222,10 @@ class Node:
     ...     return x * 2
     >>>
     >>> n = double(5)  # Create a node
-    >>> n.get()        # Execute and get result
+    >>> n()            # Execute and get result
     10
     >>> n.script       # Get execution script
     '# hash = ...\\nv0 = double(x=5)'
-
-    Methods
-    -------
-    get()
-        Execute node and return result.
-    delete()
-        Delete cached value.
-    create()
-        Force recompute ignoring cache.
-    script()
-        Return human-readable script.
     """
     __slots__ = (
         "fn",
@@ -301,8 +233,7 @@ class Node:
         "deps_nodes",
         "cache",
         "_hash",
-        "_lock",
-        "_runtime",
+        "_canonical_inputs",
         "__weakref__",
         "_order",
         "_script_lines",
@@ -310,7 +241,6 @@ class Node:
     )
 
     _hash: int
-    _lock: threading.Lock
 
     def __init__(
         self,
@@ -318,27 +248,19 @@ class Node:
         inputs: dict[str, Any],
         *,
         cache: bool = True,
-        runtime: Any = None,
     ):
-        """初始化 Node。
+        """Initialize a Node.
 
-        Parameters
-        ----------
-        fn : Callable
-            被包装的函数
-        inputs : dict[str, Any]
-            参数名到值的映射（已包含所有默认值）
-        cache : bool
-            是否启用缓存
-        runtime : Runtime
-            关联的运行时实例
+        Args:
+            fn: The wrapped function.
+            inputs: Mapping of parameter names to values (includes all defaults).
+            cache: Whether to enable caching for this node.
         """
-        self._runtime = runtime
         self.fn = fn
         self.inputs = inputs
         self.cache = cache
 
-        # 递归收集参数中所有的 Node 对象（包括嵌套在 tuple/list 中的）
+        # Recursively collect all Node objects from parameters (including nested in tuple/list)
         def collect_nodes(v):
             if isinstance(v, Node):
                 yield v
@@ -349,21 +271,18 @@ class Node:
         self.deps_nodes: list[Node] = list(
             node for value in inputs.values() for node in collect_nodes(value)
         )
-        # 计算 hash（规范化逻辑封装在 compute_hash 中）
+        # Compute hash and canonical inputs
         ignore = frozenset(getattr(fn, "_node_ignore", ()))
-        self._hash = compute_hash(fn.__name__, inputs, ignore)
-        self._lock = threading.Lock()
+        self._hash, self._canonical_inputs = compute_node_identity(fn.__name__, inputs, ignore)
 
     def __getstate__(self):
         # Exclude non-serializable attributes and lazy attributes that may not exist
-        exclude = {"_lock", "_runtime", "__weakref__"}
+        exclude = {"__weakref__"}
         return {k: getattr(self, k) for k in self.__slots__ if k not in exclude and hasattr(self, k)}
 
     def __setstate__(self, state):
         for k, v in state.items():
             setattr(self, k, v)
-        self._lock = threading.Lock()
-        self._runtime = None
 
     def __repr__(self):
         return self.script
@@ -376,13 +295,12 @@ class Node:
     def __hash__(self) -> int:
         return self._hash
 
-    @property
-    def key(self) -> str:
-        """Unique identifier combining function name and hash."""
-        return f"{self.fn.__name__}_{self._hash:x}"
 
     def __lt__(self, other: "Node") -> bool:
-        return self._hash < other._hash
+        """Compare nodes by function name, then by canonical inputs."""
+        if self.fn.__name__ != other.fn.__name__:
+            return self.fn.__name__ < other.fn.__name__
+        return self._canonical_inputs < other._canonical_inputs
 
 
     @property
@@ -392,34 +310,32 @@ class Node:
             return self._script_lines
 
 
-        with self._lock:
-            order = self.order
-            # 为每个函数维护计数器，生成简化变量名
-            from collections import defaultdict
-            fn_counters: dict[str, int] = defaultdict(int)
-            var_names: dict[Node, str] = {}
-            
-            for node in order:
-                fn_name = node.fn.__name__
-                idx = fn_counters[fn_name]
-                fn_counters[fn_name] += 1
-                var_names[node] = f"{fn_name}_{idx}"
-            
-            lines: list[tuple[int, str]] = []
-            for node in order:
-                var_map = {d: var_names[d] for d in node.deps_nodes}
-                ignore = getattr(node.fn, "_node_ignore", ())
-                call = _render_call(
-                    node.fn,
-                    node.inputs,
-                    canonical=True,
-                    mapping=var_map,
-                    ignore=ignore,
-                )
-                lines.append((node._hash, f"{var_names[node]} = {call}"))
-            
-            self._script_lines = lines
-            return lines
+        order = self.order
+        # Maintain counter per function name to generate simplified variable names
+        from collections import defaultdict
+        fn_counters: dict[str, int] = defaultdict(int)
+        var_names: dict[Node, str] = {}
+        
+        for node in order:
+            fn_name = node.fn.__name__
+            idx = fn_counters[fn_name]
+            fn_counters[fn_name] += 1
+            var_names[node] = f"{fn_name}_{idx}"
+        
+        lines: list[tuple[int, str]] = []
+        for node in order:
+            var_map = {d: var_names[d] for d in node.deps_nodes}
+            ignore = getattr(node.fn, "_node_ignore", ())
+            call = _render_call(
+                node.fn,
+                node.inputs,
+                mapping=var_map,
+                ignore=ignore,
+            )
+            lines.append((node._hash, f"{var_names[node]} = {call}"))
+        
+        self._script_lines = lines
+        return lines
 
     @property
     def order(self) -> list["Node"]:
@@ -441,29 +357,63 @@ class Node:
         self._script = f"# hash = {self._hash:x}\n{body}"
         return self._script
 
-    def _get_runtime(self):
-        """Get the runtime for this node, falling back to global."""
-        if self._runtime is not None:
-            return self._runtime
+    # Primary API
+    def __call__(self, *, force: bool = False):
+        """Execute this node and return the result.
+        
+        Parameters
+        ----------
+        force : bool, optional
+            If True, invalidate cache for this node and recompute. 
+            Defaults to False.
+            
+        Returns
+        -------
+        Any
+            The computed result.
+            
+        Examples
+        --------
+        >>> result = my_node()            # Execute with caching
+        >>> result = my_node(force=True)  # Force recomputation
+        """
         from .runtime import get_runtime
-        return get_runtime()
+        if force:
+            self.invalidate()
+        return get_runtime().run(self, cache_root=self.cache)
 
-    # Convenience methods that delegate to runtime
+    def invalidate(self) -> None:
+        """Invalidate cached value for this node.
+        
+        After calling this, the next execution will recompute the result.
+        """
+        from .runtime import get_runtime
+        get_runtime().delete(self)
+
+    # Aliases for backward compatibility (deprecated)
     def get(self):
-        """Execute this node using the runtime."""
-        return self._get_runtime().run(self, cache_root=self.cache)
+        """Execute this node using the runtime.
+        
+        .. deprecated::
+            Use ``node()`` instead.
+        """
+        return self()
 
     def delete(self) -> None:
-        """Delete cached value for this node."""
-        self._get_runtime().delete(self)
+        """Delete cached value for this node.
+        
+        .. deprecated::
+            Use ``node.invalidate()`` instead.
+        """
+        self.invalidate()
 
     def create(self):
-        """Recompute this node ignoring existing cache."""
-        return self._get_runtime().create(self)
-
-    def generate(self) -> None:
-        """Compute and cache this node without returning the value."""
-        self._get_runtime().generate(self)
+        """Recompute this node ignoring existing cache.
+        
+        .. deprecated::
+            Use ``node(force=True)`` instead.
+        """
+        return self(force=True)
 
 
 def gather(
@@ -495,7 +445,7 @@ def gather(
     Examples
     --------
     >>> tasks = [my_task(i) for i in range(5)]
-    >>> all_results = node.gather(tasks).get()
+    >>> all_results = node.gather(tasks)()
     """
     from .runtime import get_runtime
 
@@ -507,17 +457,7 @@ def gather(
     if not nodes_list:
         raise ValueError("no nodes provided")
 
-    # Get runtime from first node, or fall back to global
-    first_runtime = nodes_list[0]._runtime
-    if first_runtime is None:
-        runtime = get_runtime()
-    else:
-        runtime = first_runtime
-
-    # Check all nodes share the same runtime
-    for n in nodes_list[1:]:
-        if n._runtime is not None and n._runtime is not runtime:
-            raise ValueError("nodes belong to different Flow instances")
+    runtime = get_runtime()
 
     @runtime.define(workers=workers, cache=cache)
     def _gather(*items):
@@ -571,7 +511,7 @@ def sweep(
     ...     base_value,  # Pass the function, not base_value()
     ...     config={"global_multiplier": [1, 2, 3]},
     ...     x=5,  # Pass required args as kwargs
-    ... ).get()
+    ... )()
     >>> # [5, 10, 15]
     """
     from .runtime import get_runtime

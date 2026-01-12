@@ -18,11 +18,11 @@ from weakref import WeakValueDictionary
 
 from loky import ProcessPoolExecutor
 from omegaconf import OmegaConf
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
 from .config import Config
-from .core import Node, _build_graph, clear_caches
+from .core import Node, _build_graph
 from .logger import logger
 
 __all__ = [
@@ -187,10 +187,10 @@ class Runtime:
     def _cleanup_uncached(self, root: Node, order: list[Node], cache_root: bool) -> None:
         """Delete cache entries for nodes that should not be cached."""
         if not (cache_root and root.cache):
-            self.cache.delete(root.key)
+            self.cache.delete(root.fn.__name__, root._hash)
         for n in order:
             if not n.cache and n is not root:
-                self.cache.delete(n.key)
+                self.cache.delete(n.fn.__name__, n._hash)
 
     def define(
         self,
@@ -239,7 +239,7 @@ class Runtime:
                 setattr(fn, k, v)
 
             wrapped = (
-                validate_arguments(fn, config={"arbitrary_types_allowed": True})
+                validate_call(fn, config={"arbitrary_types_allowed": True})
                 if self.validate
                 else fn
             )
@@ -256,7 +256,7 @@ class Runtime:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(wrapped, bound.arguments, cache=cache, runtime=self)
+                node = Node(wrapped, bound.arguments, cache=cache)
                 cached_node = self._registry.get(node)
                 if cached_node is not None:
                     return cached_node
@@ -280,7 +280,7 @@ class Runtime:
     def _resolve(self, v):
         """递归解析参数值，将 Node 替换为其缓存的计算结果。"""
         if isinstance(v, Node):
-            hit, val = self.cache.get(v.key)
+            hit, val = self.cache.get(v.fn.__name__, v._hash)
             return val if hit else None
         elif isinstance(v, tuple):
             return tuple(self._resolve(item) for item in v)
@@ -296,7 +296,7 @@ class Runtime:
         dur = time.perf_counter() - start
         if self.on_node_end is not None:
             self.on_node_end(n, dur, False, True)
-        self._failed.add(n.key)
+        self._failed.add(n._hash)
         if sem is not None:
             sem.release()
 
@@ -318,7 +318,7 @@ class Runtime:
 
     def _save_result(self, node: Node, val: Any, start: float) -> None:
         """Save result to cache and trigger callbacks after successful execution."""
-        self.cache.put(node.key, val)
+        self.cache.put(node.fn.__name__, node._hash, val)
         if self._can_save:
             self.cache.save_script(node)
         dur = time.perf_counter() - start
@@ -331,12 +331,12 @@ class Runtime:
         if sem is not None:
             sem.acquire()
         start = time.perf_counter()
-        if any(d.key in self._failed for d in n.deps_nodes):
+        if any(d._hash in self._failed for d in n.deps_nodes):
             self._fail_node(n, start, sem)
             return None
         if self.on_node_start is not None:
             self.on_node_start(n)
-        hit, val = self.cache.get(n.key) if n.cache else (False, None)
+        hit, val = self.cache.get(n.fn.__name__, n._hash) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
             if self.on_node_end is not None:
@@ -351,9 +351,9 @@ class Runtime:
         try:
             val = n.fn(*args, **kwargs)
         except Exception as e:
-            logger.error("node {} failed for {}", n.key, e, exc_info=True)
+            logger.error("node {} failed for {}", f"{n.fn.__name__}_{n._hash:x}", e, exc_info=True)
             if self.continue_on_error:
-                self._failed.add(n.key)
+                self._failed.add(n._hash)
                 dur = time.perf_counter() - start
                 if self.on_node_end is not None:
                     self.on_node_end(n, dur, False, True)
@@ -386,7 +386,7 @@ class Runtime:
         t0 = time.perf_counter()
 
         use_cache = cache_root and root.cache
-        hit, val = self.cache.get(root.key) if use_cache else (False, None)
+        hit, val = self.cache.get(root.fn.__name__, root._hash) if use_cache else (False, None)
 
         if hit:
             if self.on_node_start is not None:
@@ -413,7 +413,7 @@ class Runtime:
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
-            result = self.cache.get(root.key)[1]
+            result = self.cache.get(root.fn.__name__, root._hash)[1]
             self._cleanup_uncached(root, order, cache_root)
 
             return result
@@ -449,7 +449,7 @@ class Runtime:
         with pool_cls(**pool_kwargs) as pool:
 
             def submit(node):
-                if any(d.key in self._failed for d in node.deps_nodes):
+                if any(d._hash in self._failed for d in node.deps_nodes):
                     self._fail_node(node, time.perf_counter(), None)
                     ts.done(node)
                     for ready in ts.get_ready():
@@ -468,7 +468,7 @@ class Runtime:
                     start = time.perf_counter()
                     if self.on_node_start:
                         self.on_node_start(node)
-                    hit, val = self.cache.get(node.key) if node.cache else (False, None)
+                    hit, val = self.cache.get(node.fn.__name__, node._hash) if node.cache else (False, None)
                     if hit:
                         if self.on_node_end:
                             self.on_node_end(
@@ -480,7 +480,7 @@ class Runtime:
                     args, kwargs = self._bind_args(node, resolved_bound)
                     sem = sems[node.fn]
                     sem.acquire()
-                    fut = pool.submit(_call_fn, node.fn, args, kwargs, node.key)
+                    fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
                     fut_map[fut] = (node, start, sem, args, kwargs)
 
             for n in ts.get_ready():
@@ -498,14 +498,14 @@ class Runtime:
                         try:
                             val = fut.result()
                         except (pickle.PicklingError, AttributeError):
-                            val = _call_fn(node.fn, args, kwargs, node.key)
+                            val = _call_fn(node.fn, args, kwargs, node._hash)
                         except Exception as e:
                             if self.continue_on_error:
                                 logger.error(
-                                    f"node {node.key} failed for {e}",
+                                    f"node {node.fn.__name__}_{node._hash:x} failed for {e}",
                                     exc_info=True,
                                 )
-                                self._failed.add(node.key)
+                                self._failed.add(node._hash)
                                 dur = time.perf_counter() - start
                                 if self.on_node_end is not None:
                                     self.on_node_end(node, dur, False, True)
@@ -532,34 +532,12 @@ class Runtime:
         self.on_node_end = orig_end
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count, len(self._failed))
-        result = self.cache.get(root.key)[1]
+        result = self.cache.get(root.fn.__name__, root._hash)[1]
 
         self._cleanup_uncached(root, order, cache_root)
 
         return result
 
-    def generate(self, root: Node) -> None:
-        """Compute and cache ``root`` without returning the value."""
-        self.run(root)
-        if isinstance(self.cache, MemoryLRU):
-            for n in root.order:
-                self.cache.delete(n.key)
-        elif isinstance(self.cache, ChainCache):
-            for c in self.cache.caches:
-                if isinstance(c, MemoryLRU):
-                    for n in root.order:
-                        c.delete(n.key)
-
-    def create(self, root: Node):
-        """Recompute ``root`` ignoring any existing cache."""
-        for n in root.order:
-            self.cache.delete(n.key)
-        return self.run(root)
-
     def delete(self, root: Node) -> None:
         """Delete cache entry for ``root``."""
-        self.cache.delete(root.key)
-
-    def clear_caches(self) -> None:
-        """Clear global helper caches."""
-        clear_caches()
+        self.cache.delete(root.fn.__name__, root._hash)

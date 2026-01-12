@@ -7,7 +7,7 @@ src_path = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(src_path))
 
 import pytest
-from node import Runtime, ChainCache, DiskJoblib, MemoryLRU, reset
+from node import configure, get_runtime, reset, ChainCache, DiskJoblib, MemoryLRU
 
 
 @pytest.fixture(autouse=True)
@@ -20,10 +20,14 @@ def reset_runtime():
 
 @pytest.fixture
 def runtime_factory(tmp_path):
-    def _make(**kwargs) -> Runtime:
+    """Factory that configures the global runtime and returns it.
+    
+    This ensures all tests use the singleton global runtime.
+    """
+    def _make(**kwargs):
         cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
         kwargs.setdefault("continue_on_error", False)
         kwargs.setdefault("validate", False)
-        return Runtime(cache=cache, **kwargs)
+        return configure(cache=cache, **kwargs)
 
     return _make

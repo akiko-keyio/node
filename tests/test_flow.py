@@ -34,23 +34,6 @@ def test_node_get(runtime_factory):
     assert node.get() == 5
 
 
-def test_generate_populates_cache(runtime_factory):
-    rt = runtime_factory()
-    calls = []
-
-    @rt.define()
-    def inc(x):
-        calls.append(x)
-        return x + 1
-
-    node = inc(2)
-    res = node.generate()
-    assert res is None
-    assert calls == [2]
-    # get should reuse cache without recomputing
-    assert node.get() == 3
-    assert calls == [2]
-
 
 def test_cache_skips_execution(runtime_factory):
     rt = runtime_factory()
@@ -296,13 +279,13 @@ def test_chaincache_promotion(runtime_factory, tmp_path):
 
     node = add(2, 3)
     rt.run(node)
-    assert node.key in mem._lru
+    assert node._hash in mem._lru
 
     mem._lru.clear()
-    assert node.key not in mem._lru
+    assert node._hash not in mem._lru
 
     rt.run(node)
-    assert node.key in mem._lru
+    assert node._hash in mem._lru
 
 
 def test_parallel_execution(runtime_factory):
@@ -488,11 +471,11 @@ def test_cache_fallback_hash(runtime_factory, tmp_path, monkeypatch):
 
     orig_put = disk.put
 
-    def bad_first_put(key, value):
+    def bad_first_put(fn_name, hash_value, value):
         if not hasattr(bad_first_put, "done"):
             bad_first_put.done = True
             raise OSError("fail")
-        return orig_put(key, value)
+        return orig_put(fn_name, hash_value, value)
 
     monkeypatch.setattr(disk, "put", bad_first_put)
 
@@ -529,14 +512,14 @@ def test_delete_cache(runtime_factory, tmp_path):
 
     node = add(1, 2)
     assert rt.run(node) == 3
-    assert node.key in mem._lru
+    assert node._hash in mem._lru
 
-    p = disk._path(node.key)
+    p = disk._path(node.fn.__name__, node._hash)
     assert p.exists()
 
-    node.delete()
+    rt.delete(node)
 
-    assert node.key not in mem._lru
+    assert node._hash not in mem._lru
     assert not p.exists()
 
     assert rt.run(node) == 3
@@ -609,11 +592,11 @@ def test_cached_dependency_skips_upstream(runtime_factory):
     class TrackingCache(MemoryLRU):
         def __init__(self):
             super().__init__()
-            self.calls: list[str] = []
+            self.calls: list[int] = []
 
-        def get(self, key: str):  # type: ignore[override]
-            self.calls.append(key)
-            return super().get(key)
+        def get(self, fn_name: str, hash_value: int):  # type: ignore[override]
+            self.calls.append(hash_value)
+            return super().get(fn_name, hash_value)
 
     cache = TrackingCache()
     rt = runtime_factory(cache=cache)
@@ -638,9 +621,9 @@ def test_cached_dependency_skips_upstream(runtime_factory):
 
     assert rt.run(root) == 3
 
-    cache.delete(root.key)
+    cache.delete(root.fn.__name__, root._hash)
     cache.calls.clear()
 
     assert rt.run(root) == 3
-    assert c_node.key not in cache.calls
-    assert b_node.key in cache.calls
+    assert c_node._hash not in cache.calls
+    assert b_node._hash in cache.calls

@@ -20,21 +20,6 @@ def test_gather_util(runtime_factory):
     assert result2 == [2, 3]
 
 
-def test_gather_flow_mismatch(runtime_factory):
-    flow1 = runtime_factory()
-    flow2 = runtime_factory()
-
-    @flow1.define()
-    def a(x):
-        return x
-
-    @flow2.define()
-    def b(x):
-        return x
-
-    with pytest.raises(ValueError):
-        gather(a(1), b(2))
-
 
 def test_gather_custom_workers(runtime_factory):
     rt = runtime_factory()

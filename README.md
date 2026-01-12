@@ -1,8 +1,8 @@
 # Node
 
-Node 是一个轻量级的 Python DAG 执行框架，专为数据管线和计算密集型任务设计。它通过简洁的装饰器 API 自动处理**缓存**、**并行执行**和**结果追溯**，让你专注于业务逻辑。
+Node 是一个轻量级的 Python DAG 执行框架，专为数据管线和计算密集型任务设计。它通过简洁的装饰器 API 自动处理**自动缓存**、**结果追溯**、**并行执行**、**配置管理**，让你专注于业务逻辑。
 
-## 安装
+# 安装
 
 ```bash
 pip install -e .
@@ -10,7 +10,7 @@ pip install -e .
 
 Python 版本需 ≥3.10。
 
-## 快速开始
+# 快速开始
 
 ```python
 import node
@@ -23,24 +23,56 @@ def add(x, y):
 def square(n):
     return n * n
 
-# 构建 DAG 并执行
-result = square(add(2, 3)).get()
-print(result)  # 25
+# 构建计算节点
+node1 = square(add(2, 3))
 
-# 再次执行 → 直接从缓存返回
-result = square(add(2, 3)).get()
+# 执行计算
+print(node1())  # 25
 ```
 
 ---
 
-## 核心机制
+# 核心机制
 
-### 纯函数要求
+## 自动缓存
 
-> [!IMPORTANT]
-> 所有使用 `@node.define` 装饰的函数必须是**纯函数**。
+根据节点标识（缓存键）维护计算结果，避免重复计算：
 
-**纯函数定义**：
+```python
+import time
+
+@node.define()
+def slow_compute(x):
+    time.sleep(2)
+    return x * 2
+
+# 第一次执行：计算并写入缓存（耗时2秒）
+result = slow_compute(5)()
+
+# 第二次执行：检测到相同的缓存键，直接返回结果（瞬间完成）
+result = slow_compute(5)()
+
+# 参数变化：重新计算
+result = slow_compute(6)()  # 2秒
+```
+
+**节点标识**
+
+缓存的关键在于如何唯一标识每个计算节点。节点标识定义为：
+
+```text
+节点标识 = hash(函数名 + 参数 + 依赖节点的标识)
+```
+
+如果满足以下条件，节点标识确定了唯一的输出结果：
+
+- 相同函数名确定了相同的计算逻辑
+- 所有影响结果的参数、依赖节点都被考虑（纯函数）
+- 依赖节点的标识确定了唯一的依赖节点的结果
+
+**纯函数要求**
+
+为确保节点标识与输出结果的一一对应，所有使用 `@node.define` 装饰的函数必须是**纯函数**：
 
 - 相同的输入永远产生相同的输出
 - 不产生副作用（不修改外部状态、不执行 I/O）
@@ -64,53 +96,34 @@ def generate(n):
     return [random.random() for _ in range(n)]
 ```
 
----
+**缓存后端**
 
-### 节点标识
-
-节点标识定义为：
-
-```text
-节点标识 = hash(函数名 + 参数 + 依赖节点的标识)
-```
-
-如果满足以下条件，节点标识确定了唯一的输出结果：
-
-- 相同函数名确定了相同的计算逻辑
-- 所有影响结果的参数、依赖节点都被考虑（纯函数）
-- 依赖节点的标识确定了唯一的依赖节点的结果
-
----
-
-### 自动缓存
-
-根据节点标识（缓存键）维护计算结果，避免重复计算
+默认使用两级缓存：内存 LRU → 磁盘持久化。可通过 `node.configure()` 自定义：
 
 ```python
-import time
+from node import ChainCache, MemoryLRU, DiskJoblib
 
-@node.define()
-def slow_compute(x):
-    time.sleep(2)
-    return x * 2
-
-# 第一次执行：计算并写入缓存（耗时2秒）
-result = slow_compute(5).get()
-
-# 第二次执行：检测到相同的缓存键，直接返回结果（瞬间完成）
-result = slow_compute(5).get()
-
-# 参数变化：重新计算
-result = slow_compute(6).get()  # 2秒
+node.configure(
+    cache=ChainCache([
+        MemoryLRU(maxsize=512),       # 内存缓存，LRU 淘汰
+        DiskJoblib(root=".cache"),    # 磁盘缓存
+    ])
+)
 ```
+
+| 缓存类型     | 用途           | 配置项                                     |
+| ------------ | -------------- | ------------------------------------------ |
+| `MemoryLRU`  | 快速访问热数据 | `maxsize`: 最大条目数                      |
+| `DiskJoblib` | 持久化到磁盘   | `root`: 缓存目录, `small_file`: 小文件阈值 |
+| `ChainCache` | 组合多级缓存   | 按顺序查找，命中后回填                     |
 
 ---
 
-### 结果追溯
+## 结果追溯
 
-节点标识映射了唯一的计算结果，但无法追溯节点计算过程（不可逆）。为此框架进一步解析了节点的计算过程。
+缓存基于节点标识，但哈希值是不可逆的。为支持调试和复现，框架提供了两种方式查看完整的计算过程：
 
-通过 `repr(node)` 返回可执行的 Python 脚本，展示完整的计算过程：
+**方式一**：通过 `repr(node)` 获取可执行的 Python 脚本：
 
 ```python
 a = A()
@@ -126,16 +139,20 @@ C_0 = C(a=A_0)
 D_0 = D(b=B_0, c=C_0)
 ```
 
-**用途**：
+**方式二**：配置磁盘缓存 `DiskJoblib` 后，复现脚本自动保存在缓存目录：
 
-- **调试复现**：直接复制执行，复现计算过程
-- **缓存键验证**：脚本头部的 `# hash = xxx` 即为最终节点 `D_0` 结果的缓存键
+```text
+.cache/
+├── D/
+│   ├── 7c3b8fad541e11.pkl    # 计算结果
+│   └── 7c3b8fad541e11.py     # 复现脚本（内容同上）
+```
 
 ---
 
-### 任务调度
+## 任务调度
 
-框架调度策略如下：
+缓存命中后无需重新计算，但未命中的节点可以并行执行。框架调度策略如下：
 
 1. 遍历 DAG，按依赖顺序收集所有节点
 2. 检查每个节点的缓存状态
@@ -161,45 +178,7 @@ d1, d2, d3 = download(url1), download(url2), download(url3)
 results = gather([parse(d1), parse(d2), parse(d3)]).get()
 ```
 
----
-
-## 配置框架
-
-### 缓存后端
-
-默认使用两级缓存：内存 LRU → 磁盘持久化。可自定义：
-
-```python
-from node import ChainCache, MemoryLRU, DiskJoblib
-
-node.configure(
-    cache=ChainCache([
-        MemoryLRU(maxsize=512),       # 内存缓存，LRU 淘汰
-        DiskJoblib(root=".cache"),    # 磁盘缓存
-    ])
-)
-```
-
-| 缓存类型     | 用途           | 配置项                                     |
-| ------------ | -------------- | ------------------------------------------ |
-| `MemoryLRU`  | 快速访问热数据 | `maxsize`: 最大条目数                      |
-| `DiskJoblib` | 持久化到磁盘   | `root`: 缓存目录, `small_file`: 小文件阈值 |
-| `ChainCache` | 组合多级缓存   | 按顺序查找，命中后回填                     |
-
-`DiskJoblib` 会自动保存脚本到缓存目录：
-
-```text
-.cache/
-├── add/
-│   ├── 89f9dde6.pkl    # 计算结果
-│   └── 89f9dde6.py     # 生成脚本（可复现）
-└── square/
-    └── ...
-```
-
----
-
-### 执行器配置
+**执行器配置**
 
 ```python
 node.configure(
@@ -208,7 +187,7 @@ node.configure(
 )
 ```
 
-节点级控制：
+**节点级控制：**
 
 ```python
 @node.define(workers=2)      # 此函数最多 2 个并发
@@ -221,9 +200,7 @@ def parallel_task(): ...
 def io_task(): ...
 ```
 
----
-
-### YAML 配置系统
+## 配置管理
 
 通过 YAML 集中管理节点默认参数：
 
@@ -269,9 +246,9 @@ result = process().get()  # threshold=0.8
 
 ---
 
-## 便利工具
+# 便利工具
 
-### gather - 聚合节点
+## gather 聚合节点
 
 `gather` 将多个独立节点合并为列表：
 
@@ -287,7 +264,7 @@ results = gather(nodes).get()
 # → [2, 4, 6]
 ```
 
-### sweep - 参数扫描
+## sweep 参数扫描
 
 `sweep` 通过遍历全局配置，生成多组独立的执行结果。配合 `${...}` 引用机制，只需调整顶级参数，即可自动更新整个依赖链所有节点的参数。
 
@@ -321,17 +298,12 @@ def train(data, strategy):
 results = node.sweep(
     train,
     config={"mode": ["fast", "accurate"]}
-).get()
+)()
 
-# → ["Result(Data(fast), fast)", "Result(Data(accurate), accurate)"]
+# ["Result(Data(fast), fast)", "Result(Data(accurate), accurate)"]
 ```
 
-
----
-
-## 进度监控
-
-### track - 节点内进度
+## track - 进度监控
 
 在节点内部追踪循环进度：
 
@@ -347,54 +319,3 @@ def process_items(items):
 ```
 
 进度条会显示在对应节点行下方，支持线程和进程池执行。
-
----
-
-## API 参考
-
-### @node.define() 参数
-
-```python
-@node.define(
-    ignore=["logger"],  # 从缓存键中排除的参数
-    workers=2,          # 此函数的最大并发数
-    cache=True,         # 是否缓存结果
-    local=True,         # 在主线程执行
-)
-def my_func(): ...
-```
-
-### node.configure 参数
-
-```python
-node.configure(
-    config=Config("config.yaml"),  # 配置对象或路径
-    cache=ChainCache([...]),       # 缓存后端
-    executor="thread",             # 执行器类型
-    workers=4,                     # 默认并发数
-)
-```
-
-> **注意**：`node.configure()` 只能调用一次。如需重置，使用 `node.reset()`。
-
-### 节点操作
-
-```python
-root = square(add(2, 3))
-
-root.get()      # 执行并返回结果
-root.delete()   # 删除此节点的缓存
-root.create()   # 强制重新计算
-root.generate() # 计算并缓存，但不返回值
-```
-
-
-### 日志
-
-内置 `loguru` 日志记录器：
-
-```python
-from node import logger
-
-logger.info("Processing started")
-```

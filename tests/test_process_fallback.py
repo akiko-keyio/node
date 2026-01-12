@@ -6,9 +6,9 @@ def test_process_pickling_fallback(tmp_path):
     disk = DiskJoblib(tmp_path)
     orig_put = disk.put
 
-    def safe_put(key, value):
+    def safe_put(fn_name, hash_value, value):
         try:
-            orig_put(key, value)
+            orig_put(fn_name, hash_value, value)
         except Exception:
             pass
 
@@ -30,5 +30,5 @@ def test_process_pickling_fallback(tmp_path):
     node = make_fn(5)
     fn = rt.run(node)
     assert fn() == 5
-    p = disk._path(node.key, ".py")
+    p = disk._path(node.fn.__name__, node._hash, ".py")
     assert p.exists()
