@@ -76,3 +76,28 @@ def test_tensor_node_apply_rejects_dim_values_mismatch():
 
     with pytest.raises(ValueError, match="values"):
         a.apply(add, b)
+
+
+def test_tensor_node_align_to_reorders_nodes():
+    dim_src = Dim("item", values=("b", "a"))
+    dim_dst = Dim("item", values=("a", "b"))
+    tensor = TensorNode.from_nodes([double(2), double(1)], dim=dim_src)
+
+    aligned = tensor.align_to(dim_dst)
+
+    assert aligned() == [2, 4]
+
+
+def test_tensor_node_apply_aligns_dim_value_order():
+    dim_a = Dim("item", values=("b", "a"))
+    dim_b = Dim("item", values=("a", "b"))
+    a = TensorNode.from_nodes([double(2), double(1)], dim=dim_a)
+    b = TensorNode.from_nodes([double(1), double(2)], dim=dim_b)
+
+    @node.define()
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    result = a.apply(add, b)
+
+    assert result() == [8, 4]
