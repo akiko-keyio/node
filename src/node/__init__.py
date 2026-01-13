@@ -36,6 +36,7 @@ from .cache import Cache, ChainCache, MemoryLRU, DiskJoblib
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
 from .logger import logger, console
+from .tensor import Dim, TensorNode
 
 # Module-level API that delegates to singleton Runtime
 def run(root: Node, *, reporter=None, cache_root: bool = True):
@@ -151,6 +152,8 @@ __all__ = [
     # Config
     "Config",
     "cfg",
+    "Dim",
+    "TensorNode",
     # Optional
     "RichReporter",
     "track",
