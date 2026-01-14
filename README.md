@@ -15,6 +15,8 @@ Python 版本需 ≥3.10。
 ```python
 import node
 
+node.configure()
+
 @node.define()
 def add(x, y):
     return x + y

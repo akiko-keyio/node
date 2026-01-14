@@ -1,12 +1,13 @@
 from rich.console import Console
-from node import Runtime
+import node
 from node.reporters import RichReporter, track
 
 
 def test_track_inside_node():
-    rt = Runtime(validate=False, continue_on_error=False)
+    node.reset()
+    rt = node.configure(validate=False, continue_on_error=False)
 
-    @rt.define()
+    @node.define()
     def loop(n: int) -> int:
         total = 0
         for i in track(range(n), description="loop", total=n):

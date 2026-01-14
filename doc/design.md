@@ -44,6 +44,8 @@
 ```python
 import node
 
+node.configure()
+
 @node.define
 def add(x, y):
     return x + y
@@ -384,4 +386,3 @@ def process(items):
 ```
 
 进度条会显示在对应节点行下方，支持线程和进程池执行。
-

@@ -37,12 +37,10 @@ _runtime_lock = threading.Lock()
 
 
 def get_runtime() -> "Runtime":
-    """Get the global Runtime instance, creating one with defaults if needed."""
+    """Get the global Runtime instance."""
     global _runtime
     if _runtime is None:
-        with _runtime_lock:
-            if _runtime is None:
-                _runtime = Runtime()
+        raise RuntimeError("Runtime is not configured. Call configure() first.")
     return _runtime
 
 

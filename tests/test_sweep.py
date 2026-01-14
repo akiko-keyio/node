@@ -108,7 +108,7 @@ def test_sweep_dependency_chain_via_config():
     new config value.
     """
     node.reset()
-    rt = node.get_runtime()
+    node.configure()
     
     # 1. Define Nodes locally (binds to current Runtime)
     @node.define()
@@ -143,8 +143,6 @@ def test_sweep_dependency_chain_via_config():
                 "b": "${node_b}"
             }
         })
-        # node.configure() might raise if called with config, so we set it directly
-        # after ensuring runtime is active.
         node.get_runtime().config = Config(config)
         
         # 4. Sweep node_a over global_val
