@@ -231,36 +231,51 @@ class Runtime:
             node_attrs = {
                 "_node_ignore": ignore_set,
                 "_node_sig": sig_obj,
-                "_node_workers": workers if workers is not None else self.workers,
                 "_node_local": local,
             }
 
             for k, v in node_attrs.items():
                 setattr(fn, k, v)
 
-            wrapped = (
-                validate_call(fn, config={"arbitrary_types_allowed": True})
-                if self.validate
-                else fn
-            )
+            validated_fn: Callable[..., Any] | None = None
 
-            if wrapped is not fn:
-                for k, v in node_attrs.items():
-                    setattr(wrapped, k, v)
+            def get_validated_fn() -> Callable[..., Any]:
+                nonlocal validated_fn
+                if validated_fn is None:
+                    validated_fn = validate_call(
+                        fn,
+                        config={"arbitrary_types_allowed": True},
+                    )
+                    for k, v in node_attrs.items():
+                        setattr(validated_fn, k, v)
+                return validated_fn
 
             @functools.wraps(fn)
             def wrapper(*args, **kwargs) -> Node:
+                nonlocal validated_fn
+                current_runtime = get_runtime()
+                effective_workers = (
+                    workers if workers is not None else current_runtime.workers
+                )
+                if current_runtime.validate:
+                    selected_fn = get_validated_fn()
+                else:
+                    selected_fn = fn
+                setattr(selected_fn, "_node_workers", effective_workers)
                 bound = sig_obj.bind_partial(*args, **kwargs)
-                for name, val in self.config.defaults(fn.__name__, runtime=self).items():
+                for name, val in current_runtime.config.defaults(
+                    fn.__name__,
+                    runtime=current_runtime,
+                ).items():
                     if name not in bound.arguments:
                         bound.arguments[name] = val
                 bound.apply_defaults()
 
-                node = Node(wrapped, bound.arguments, cache=cache)
-                cached_node = self._registry.get(node)
+                node = Node(selected_fn, bound.arguments, cache=cache)
+                cached_node = current_runtime._registry.get(node)
                 if cached_node is not None:
                     return cached_node
-                self._registry[node] = node
+                current_runtime._registry[node] = node
                 return node
 
             wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
