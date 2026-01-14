@@ -1,14 +1,15 @@
 """Tests for RichReporter functionality."""
 
-from node import Runtime
+import node
 from node.reporters import RichReporter, _RichReporterCtx
 
 
 def _make_ctx():
     """Create a RichReporter context for testing."""
-    rt = Runtime(validate=False, continue_on_error=False)
+    node.reset()
+    rt = node.configure(validate=False, continue_on_error=False)
 
-    @rt.define()
+    @node.define()
     def dummy():
         return None
 

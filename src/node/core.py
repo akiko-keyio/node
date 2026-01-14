@@ -161,6 +161,9 @@ def _render_call(
         # Functions decorated with @node.define: render as function name
         if callable(v) and hasattr(v, "_node_sig"):
             return v.__name__
+        if isinstance(v, (list, tuple)):
+            inner = ", ".join(render(item) for item in v)
+            return f"[{inner}]" if isinstance(v, list) else f"({inner})"
         return _canonical(v)
 
     ignore_set = set(ignore or ())

@@ -1,4 +1,4 @@
-from node import Runtime
+import node
 from node import ChainCache, DiskJoblib, MemoryLRU
 
 
@@ -13,22 +13,23 @@ def test_process_pickling_fallback(tmp_path):
             pass
 
     disk.put = safe_put  # type: ignore[assignment]
-    rt = Runtime(
+    node.reset()
+    rt = node.configure(
         cache=ChainCache([MemoryLRU(), disk]),
         executor="process",
         continue_on_error=False,
         validate=False,
     )
 
-    @rt.define()
+    @node.define()
     def make_fn(x):
         def inner() -> int:
             return x
 
         return inner
 
-    node = make_fn(5)
-    fn = rt.run(node)
+    task_node = make_fn(5)
+    fn = rt.run(task_node)
     assert fn() == 5
-    p = disk._path(node.fn.__name__, node._hash, ".py")
+    p = disk._path(task_node.fn.__name__, task_node._hash, ".py")
     assert p.exists()

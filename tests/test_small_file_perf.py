@@ -3,15 +3,17 @@ import io
 import pstats
 import time
 
-from node import ChainCache, DiskJoblib, Runtime, MemoryLRU, gather
+import node
+from node import ChainCache, DiskJoblib, MemoryLRU, gather
 
 
 def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
     cache = ChainCache([MemoryLRU(), DiskJoblib(tmp_path, small_file=small_file)])
-    rt = Runtime(cache=cache, executor="thread", workers=8, reporter=None)
+    node.reset()
+    rt = node.configure(cache=cache, executor="thread", workers=8, reporter=None)
     rt.reporter = None
 
-    @rt.define()
+    @node.define()
     def text(i: int) -> str:
         return f"text-{i}"
 
