@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from graphlib import TopologicalSorter
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from loky import ProcessPoolExecutor
@@ -22,8 +22,11 @@ from pydantic import validate_call
 
 from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
 from .config import Config
-from .core import Node, _build_graph
+from .graph import build_graph
 from .logger import logger
+
+if TYPE_CHECKING:
+    from .core import Node
 
 __all__ = [
     "Runtime",
@@ -160,7 +163,8 @@ class Runtime:
         self._exec_count = 0
         self._failed: set[str] = set()
         self._lock = threading.Lock()
-        self._registry: WeakValueDictionary[Node, Node] = WeakValueDictionary()
+        self._registry: WeakValueDictionary["Node", "Node"] = WeakValueDictionary()
+        self._results: dict[int, Any] = {}
 
         # Reporter
         if reporter is None:
@@ -181,14 +185,6 @@ class Runtime:
     def reset_config(self) -> None:
         """Restore the configuration used at initialization."""
         self.config.copy_from(self._initial_config)
-
-    def _cleanup_uncached(self, root: Node, order: list[Node], cache_root: bool) -> None:
-        """Delete cache entries for nodes that should not be cached."""
-        if not (cache_root and root.cache):
-            self.cache.delete(root.fn.__name__, root._hash)
-        for n in order:
-            if not n.cache and n is not root:
-                self.cache.delete(n.fn.__name__, n._hash)
 
     def define(
         self,
@@ -214,7 +210,7 @@ class Runtime:
         ignore_set = set(ignore or [])
 
         def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
-            # 检测闭包变量
+            # Check for closure variables
             if fn.__closure__ is not None:
                 warnings.warn(
                     f"Function '{fn.__name__}' uses closure variables. "
@@ -249,7 +245,8 @@ class Runtime:
                 return validated_fn
 
             @functools.wraps(fn)
-            def wrapper(*args, **kwargs) -> Node:
+            def wrapper(*args, **kwargs) -> "Node":
+                from .core import Node
                 nonlocal validated_fn
                 current_runtime = get_runtime()
                 effective_workers = (
@@ -278,12 +275,6 @@ class Runtime:
 
             wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
             
-            # Add sweep method to wrapper for convenient access: process.sweep(...)
-            from .core import sweep as core_sweep
-            def wrapper_sweep(config, *, workers=None, cache=True, **kwargs):
-                return core_sweep(wrapper, config=config, workers=workers, cache=cache, **kwargs)
-            wrapper.sweep = wrapper_sweep
-            
             return wrapper
 
         return deco
@@ -292,6 +283,7 @@ class Runtime:
 
     def _resolve(self, v):
         """递归解析参数值，将 Node 替换为其缓存的计算结果。"""
+        from .core import Node
         if isinstance(v, Node):
             hit, val = self.cache.get(v.fn.__name__, v._hash)
             return val if hit else None
@@ -331,18 +323,28 @@ class Runtime:
 
     def _save_result(self, node: Node, val: Any, start: float) -> None:
         """Save result to cache and trigger callbacks after successful execution."""
-        self.cache.put(node.fn.__name__, node._hash, val)
-        if self._can_save:
-            self.cache.save_script(node)
+        with self._lock:
+            self._results[node._hash] = val
+            self._exec_count += 1
+        
+        if node.cache:
+            self.cache.put(node.fn.__name__, node._hash, val)
+            if self._can_save:
+                self.cache.save_script(node)
+        
         dur = time.perf_counter() - start
         if self.on_node_end is not None:
             self.on_node_end(node, dur, False, False)
-        with self._lock:
-            self._exec_count += 1
 
     def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
         if sem is not None:
             sem.acquire()
+        
+        if n._hash in self._results:
+            if sem is not None:
+                sem.release()
+            return self._results[n._hash]
+
         start = time.perf_counter()
         if any(d._hash in self._failed for d in n.deps_nodes):
             self._fail_node(n, start, sem)
@@ -352,13 +354,15 @@ class Runtime:
         hit, val = self.cache.get(n.fn.__name__, n._hash) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
+            with self._lock:
+                self._results[n._hash] = val
             if self.on_node_end is not None:
                 self.on_node_end(n, dur, True, False)
             if sem is not None:
                 sem.release()
             return val
 
-        # 从 inputs 解析参数并调用函数
+        # Resolve arguments from inputs and call function
         resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
         args, kwargs = self._bind_args(n, resolved_args)
         try:
@@ -395,6 +399,7 @@ class Runtime:
     def _run_internal(self, root: Node, *, cache_root: bool = True):
         self._exec_count = 0
         self._failed.clear()
+        self._results.clear()
 
         t0 = time.perf_counter()
 
@@ -402,6 +407,7 @@ class Runtime:
         hit, val = self.cache.get(root.fn.__name__, root._hash) if use_cache else (False, None)
 
         if hit:
+            self._results[root._hash] = val
             if self.on_node_start is not None:
                 self.on_node_start(root)
             if self.on_node_end is not None:
@@ -410,7 +416,7 @@ class Runtime:
                 self.on_flow_end(root, time.perf_counter() - t0, 0, 0)
             return val
 
-        order, edges = _build_graph(root, self.cache)
+        order, edges = build_graph(root, self.cache)
 
         max_node_workers = 1
         for node in order:
@@ -426,9 +432,9 @@ class Runtime:
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
-            result = self.cache.get(root.fn.__name__, root._hash)[1]
-            self._cleanup_uncached(root, order, cache_root)
-
+            
+            # Use local results instead of re-getting from cache
+            result = self._results.get(root._hash)
             return result
 
         orig_start = self.on_node_start
@@ -545,11 +551,8 @@ class Runtime:
         self.on_node_end = orig_end
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count, len(self._failed))
-        result = self.cache.get(root.fn.__name__, root._hash)[1]
-
-        self._cleanup_uncached(root, order, cache_root)
-
-        return result
+        
+        return self._results.get(root._hash)
 
     def delete(self, root: Node) -> None:
         """Delete cache entry for ``root``."""

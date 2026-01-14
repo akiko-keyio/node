@@ -29,9 +29,9 @@ def test_node_get(runtime_factory):
         return x + y
 
     node = add(2, 3)
-    assert node.get() == 5
+    assert node() == 5
     # Second call should reuse cache
-    assert node.get() == 5
+    assert node() == 5
 
 
 
@@ -66,13 +66,13 @@ def test_create_overwrites_cache(runtime_factory):
     assert rt.run(node) == 2
     assert calls == [1]
     # cache hit
-    assert node.get() == 2
+    assert node() == 2
     assert calls == [1]
 
-    assert node.create() == 2
+    assert node(force=True) == 2
     assert calls == [1, 1]
     # subsequent run uses cache again
-    assert node.get() == 2
+    assert node() == 2
     assert calls == [1, 1]
 
 
@@ -87,12 +87,12 @@ def test_get_no_cache(runtime_factory):
 
     node = inc(2)
 
-    assert node.get() == 3
+    assert node() == 3
     assert calls == [2]
-    assert node.get() == 3
+    assert node() == 3
     assert calls == [2, 2]
 
-    assert node.get() == 3
+    assert node() == 3
     assert calls == [2, 2, 2]
 
 
@@ -517,7 +517,7 @@ def test_delete_cache(runtime_factory, tmp_path):
     p = disk._path(node.fn.__name__, node._hash)
     assert p.exists()
 
-    rt.delete(node)
+    node.invalidate()
 
     assert node._hash not in mem._lru
     assert not p.exists()
@@ -546,7 +546,7 @@ def test_default_reporter(runtime_factory):
     assert rt.run(node) == 3
     assert reporter.count == 1
 
-    node.delete()
+    node.invalidate()
     extra = DummyReporter()
     assert rt.run(node, reporter=extra) == 3
     assert reporter.count == 1

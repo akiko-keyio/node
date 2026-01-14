@@ -12,7 +12,7 @@ Quick Start
 ...     return x + y
 >>> 
 >>> # Build and execute DAG
->>> result = add(1, 2).get()
+>>> result = add(1, 2)()
 >>> print(result)
 3
 
@@ -31,7 +31,7 @@ from collections.abc import Callable, Generator
 from typing import Any
 
 # Core exports
-from .core import Node, gather, sweep
+from .core import Node, gather, dimension
 from .cache import Cache, ChainCache, MemoryLRU, DiskJoblib
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
@@ -138,7 +138,7 @@ __all__ = [
     "define",
     "run",
     "gather",
-    "sweep",
+    "dimension",
     "reset",
     # Core classes
     "Node",

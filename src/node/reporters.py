@@ -25,7 +25,8 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
 from rich.table import Table  # type: ignore[import]
 
-from .core import Node, _render_call, _build_graph
+from .core import Node, _render_call
+from .graph import build_graph
 from .logger import console as _console
 
 # active reporter context for track()
@@ -181,7 +182,7 @@ class _RichReporterCtx:
         self.runtime.on_flow_end = self._flow
         
         # Pre-calculate totals by function name
-        order, _ = _build_graph(self.root, self.runtime.cache)
+        order, _ = build_graph(self.root, self.runtime.cache)
         for node in order:
             fn_name = node.fn.__name__
             self.node_to_fn_name[node._hash] = fn_name

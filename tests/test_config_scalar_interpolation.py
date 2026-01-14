@@ -17,4 +17,4 @@ def test_scalar_interpolation(runtime_factory):
     }
     rt.config = Config(cfg)
     node = show_year()
-    assert node.get() == 2023
+    assert node() == 2023

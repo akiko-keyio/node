@@ -30,4 +30,4 @@ def test_define_uses_current_runtime_after_reset():
         )
     )
 
-    assert my_node().get() == 5
+    assert my_node()() == 5

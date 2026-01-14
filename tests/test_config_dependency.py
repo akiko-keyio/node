@@ -33,4 +33,4 @@ def test_config_dependency(tmp_path):
     }
     node.get_runtime().config = Config(cfg)
     task_node = taskb()
-    assert task_node.get() == 10
+    assert task_node() == 10

@@ -14,10 +14,10 @@ def test_config_cache_toggle(runtime_factory):
     )
 
     first = echo()
-    assert first.get() == 1
+    assert first() == 1
 
     # modify configuration
     rt.config._conf.echo.value = 2
     second = echo()
-    assert second.get() == 2
+    assert second() == 2
     assert first is not second
