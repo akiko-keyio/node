@@ -1,10 +1,11 @@
+import node
 from node import Config
 
 
 def test_config_cache_toggle(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def echo(value: int) -> int:
         return value
 

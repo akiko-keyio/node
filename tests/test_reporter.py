@@ -1,7 +1,7 @@
 """Tests for RichReporter functionality."""
 
 import node
-from node.reporters import RichReporter, _RichReporterCtx
+from node.reporter import RichReporter, _RichReporterCtx
 
 
 def _make_ctx():

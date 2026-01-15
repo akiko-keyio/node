@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
-from node import Node, dimension, define, gather
-from node import Node, dimension, define, gather, configure, MemoryLRU
+from node import Node, dimension, define, configure, MemoryLRU
 
 @pytest.fixture(autouse=True)
 def setup_runtime():
@@ -50,9 +49,9 @@ def test_vector_node_representation():
         return [1, 2]
 
     v = axis_dim()
-    # Check repr (Logical View)
-    assert "<VectorNode" in repr(v)
-    assert "dims=(axis:2)" in repr(v)
+    # Check repr (Logical View with dims comment)
+    assert "# dims=(axis:2)" in repr(v)
+    assert "axis_dim_0 = axis_dim()" in repr(v)
 
 @pytest.mark.unit
 def test_broadcast_1d():
@@ -148,86 +147,12 @@ def test_dimension_mismatch():
     # t1 and t2 both have dim "time"
     # But coords are different instances (and values)
     # Should raise error
-    with pytest.raises(ValueError, match="Dimension mismatch"):
+    from node.exceptions import DimensionMismatchError
+    with pytest.raises(DimensionMismatchError, match="Dimension Mismatch"):
         combine(a=t1, b=t2)
 
-@pytest.mark.unit
-def test_reduction_1d():
-    @dimension(name="time")
-    def time_gen():
-        return [1, 2, 3]
-        
-    times = time_gen()
-    # Reduction along 'time' -> Scalar Node (List)
-    gathered = gather(times, dim="time")
-    
-    assert isinstance(gathered, Node)
-    assert gathered.dims == ()
-    # Check dependencies. 
-    # Since times._items are native values [1,2,3],
-    # gathered logic: gather(*[1,2,3]) -> Node(fn=_gather, inputs={'nodes': (1,2,3)}).
-    # This node has NO dependencies (Node deps).
-    # So deps_nodes is empty!
-    assert len(gathered.deps_nodes) == 0
-    # Inputs should contain the values
-    assert gathered.inputs['items'] == (1, 2, 3)
+# Legacy gather tests removed
 
-@pytest.mark.unit
-def test_reduction_2d_partial():
-    @dimension(name="time")
-    def time_gen():
-        return [1, 2]
-    @dimension(name="model")
-    def model_gen():
-        return ["A", "B", "C"]
-        
-    @define()
-    def predict(t, m):
-        return t
-        
-    grid = predict(t=time_gen(), m=model_gen()) # (model, time) -> (3, 2)
-    
-    # Reduce along time -> Result should be Vector(model)
-    yearly_stats = gather(grid, dim="time")
-    
-    assert yearly_stats.dims == ("model",)
-    assert yearly_stats.coords["model"] == ["A", "B", "C"]
-    assert yearly_stats._items.shape == (3,)
-    
-    # Check item 0
-    # Should be a scalar node (result of gather)
-    item0 = yearly_stats._items[0]
-    assert isinstance(item0, Node)
-    assert item0.dims == ()
-    
-    # dependencies: should be (predict(A,1), predict(A,2))
-    # These ARE nodes (from grid._items, which are Computed Nodes).
-    # So deps_nodes count remains 2.
-    assert len(item0.deps_nodes) == 2
-
-@pytest.mark.unit
-def test_reduction_chained():
-    # Reduce 2D -> 1D -> Scalar
-    @dimension(name="time")
-    def time_gen():
-        return [1, 2]
-    @dimension(name="model")
-    def model_gen():
-        return ["A", "B"]
-        
-    @define()
-    def predict(t, m):
-        return 0
-        
-    grid = predict(t=time_gen(), m=model_gen()) # dims: (model, time)
-    
-    # Reduce model -> (time,)
-    by_time = gather(grid, dim="model")
-    assert by_time.dims == ("time",)
-    
-    # Reduce time -> Scalar
-    final = gather(by_time, dim="time")
-    assert final.dims == ()
 
 @pytest.mark.unit
 def test_repr_comprehensive():
@@ -243,7 +168,7 @@ def test_repr_comprehensive():
     # Note: Variable names are generated as {fn_name}_{idx}
     r_vec = repr(times)
     assert "time_gen_0 = time_gen()" in r_vec
-    assert "# <VectorNode dims=(time:2)>" in r_vec
+    assert "# dims=(time:2)" in r_vec
 
     # 2. Computed Vector Node (from broadcasting)
     @define()
@@ -254,8 +179,10 @@ def test_repr_comprehensive():
     
     # External Repr
     r_res = repr(result)
+    # Note: With logical view, only time_gen_0 and process_0 are shown
+    # (internal items are not expanded)
     assert "process_0 = process(t=time_gen_0)" in r_res
-    assert "# <VectorNode dims=(time:2)>" in r_res
+    assert "# dims=(time:2)" in r_res
     
     # Internal Repr
     # result._items[0] is a Node calling process(t=item0)

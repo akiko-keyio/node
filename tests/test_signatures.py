@@ -1,14 +1,15 @@
+import node
 from node import Node, ChainCache, MemoryLRU, DiskJoblib
 
 
 def test_repr_matches_script(runtime_factory, tmp_path):
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    @rt.define()
+    @node.define()
     def square(z):
         return z * z
 
@@ -23,17 +24,17 @@ def test_branch_no_diamond(runtime_factory, tmp_path):
     """Branching without shared nodes should not expand to a script."""
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    @rt.define()
+    @node.define()
     def square(z):
         return z * z
 
-    node = square(add(square(1), square(2)))
+    n = square(add(square(1), square(2)))
     # script format: header + body lines with simplified variable names
-    lines = node.script.strip().splitlines()
+    lines = n.script.strip().splitlines()
     # Header is "# hash = ..."
     assert lines[0].startswith("# hash = ")
     body_lines = lines[1:]
@@ -77,3 +78,4 @@ def test_script_dedup():
     assert len(body_lines) == 2
     assert "add_0 = add(x=1, y=2)" in body_lines[0]
     assert "add_1 = add(x=add_0, y=add_0)" in body_lines[1]
+

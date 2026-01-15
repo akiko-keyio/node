@@ -14,13 +14,12 @@ import yaml  # type: ignore[import]
 
 import node
 from node import ChainCache, Config, DiskJoblib, MemoryLRU
-from node.reporters import RichReporter
-
-
+from node import RichReporter
+node.reset()
+node.configure()
 # --------------------------------------------------------------
 # Quick start
 # --------------------------------------------------------------
-node.reset()  # Ensure clean state
 
 @node.define()
 def add(x: int, y: int) -> int:

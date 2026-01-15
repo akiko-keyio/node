@@ -25,8 +25,7 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
 from rich.table import Table  # type: ignore[import]
 
-from .core import Node, _render_call
-from .graph import build_graph
+from .core import Node, _render_call, build_graph
 from .logger import console as _console
 
 # active reporter context for track()

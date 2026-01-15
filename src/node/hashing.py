@@ -45,6 +45,19 @@ def _is_safe_type(obj: Any, depth: int = 0) -> tuple[bool, str]:
             if not safe:
                 return False, f"set element: {reason}"
     
+    try:
+        import numpy as np
+        if isinstance(obj, np.ndarray):
+            if obj.size > 1000: # Sanity limit for DAG objects
+                return True, "" # Assume safe if too big (pure data)
+            if obj.dtype == object:
+                for item in obj.ravel():
+                    safe, reason = _is_safe_type(item, depth + 1)
+                    if not safe:
+                        return False, f"ndarray element: {reason}"
+    except ImportError:
+        pass
+    
     return True, ""
 
 
@@ -87,8 +100,26 @@ def _canonical(obj: Any) -> str:
     elif isinstance(obj, set):
         inner = ", ".join(_canonical(v) for v in sorted(obj))
         return "{" + inner + "}"
-    else:
-        return repr(obj)
+    
+    # Numpy support
+    try:
+        import numpy as np
+        if isinstance(obj, np.ndarray):
+             # Hash the shape and content
+             # converting to list is safe but slow for huge arrays.
+             # For DAG construction (meta-data), arrays are usually small (coords or node lists).
+             # If array contains Nodes, we must recurse.
+             if obj.dtype == object:
+                 flat = obj.ravel()
+                 inner = ", ".join(_canonical(v) for v in flat)
+                 return f"np.array(shape={obj.shape}, items=[{inner}])"
+             else:
+                 # Primitive array
+                 return f"np.array(shape={obj.shape}, data={obj.tobytes().hex()})"
+    except ImportError:
+        pass
+
+    return repr(obj)
 
 
 def compute_node_identity(

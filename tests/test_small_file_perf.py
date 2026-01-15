@@ -4,7 +4,7 @@ import pstats
 import time
 
 import node
-from node import ChainCache, DiskJoblib, MemoryLRU, gather
+from node import ChainCache, DiskJoblib, MemoryLRU
 
 
 def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
@@ -17,7 +17,11 @@ def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
     def text(i: int) -> str:
         return f"text-{i}"
 
-    root = gather([text(i) for i in range(500)])
+    # root = gather([text(i) for i in range(500)])
+    # Replacement manual gathering
+    @node.define()
+    def gather_manual(*args): return list(args)
+    root = gather_manual(*[text(i) for i in range(500)])
     rt.run(root)
     cache.caches[0]._lru.clear()
 

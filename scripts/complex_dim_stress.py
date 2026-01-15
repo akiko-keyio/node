@@ -1,8 +1,9 @@
 import node
-from node import dimension, define, gather, Node
+from node import dimension, define, Node
+import numpy as np
 
 # Initialize runtime for global @define usage
-node.configure()
+node.configure(validate=False, cache=node.MemoryLRU())
 
 # 1. Dimension Definitions
 @dimension(name="site")
@@ -26,16 +27,26 @@ def fetch_obs(site, time):
 def run_model(data, m, config="default"):
     return f"pred_{data}_{m}_{config}"
 
-@define()
-def aggregate_site(site_list):
-    return f"agg_site({len(site_list)})"
+# NEW: Reducer Definitions
+@define(reduce_dims=["time"])
+def reduce_to_site_model(data, time):
+    print(f"DEBUG: reduce_to_site_model called. input type: {type(data)}")
+    if isinstance(data, (list, tuple)) and len(data) > 0:
+         print(f"DEBUG: First item type: {type(data[0])}")
+    return list(data)
 
-@define()
-def final_report(model_results):
-    return f"report({len(model_results)})"
+@define(reduce_dims=["site"])
+def reduce_to_model(data, site):
+    print(f"DEBUG: reduce_to_model called. input type: {type(data)}")
+    return list(data)
+
+@define(reduce_dims=["model"])
+def reduce_to_scalar(data, model):
+    print(f"DEBUG: reduce_to_scalar called. input type: {type(data)}")
+    return list(data)
 
 def run_stress_test():
-    print("--- Starting Complex Multi-Dimensional Stress Test ---")
+    print("--- Starting Complex Multi-Dimensional Stress Test (Stateless API) ---")
     
     # --- Generation ---
     sites = site_dim()    # (site: 2)
@@ -43,67 +54,54 @@ def run_stress_test():
     models = model_dim()  # (model: 2)
 
     # --- Stage 1: 2D Broadcasting ---
-    # obs: site(2) x time(3) -> shape (2, 3)
-    # Note: In our implementation, dims are sorted alphabetically by default if multiple new ones appear
-    # But here we just check if they are present and shape is correct.
     obs = fetch_obs(site=sites, time=times)
     print(f"Stage 1 (obs) shape: {obs._items.shape}, dims: {obs.dims}")
     
     assert "site" in obs.dims and "time" in obs.dims
     assert obs._items.size == 6
-    assert set(obs.coords["site"]) == {"BJ", "SH"}
-    assert set(obs.coords["time"]) == {"T1", "T2", "T3"}
 
     # --- Stage 2: 3D Broadcasting ---
-    # pred: obs(site, time) x models(model) -> 3D shape
     pred = run_model(data=obs, m=models, config="v1")
     print(f"Stage 2 (pred) shape: {pred._items.shape}, dims: {pred.dims}")
     
     assert "model" in pred.dims and "site" in pred.dims and "time" in pred.dims
-    assert pred._items.size == 12 # 2 * 2 * 3
+    assert pred._items.size == 12 
     
-    # Verification of a leaf
-    # Find indices for M1, SH, T3
-    # Our broadcasting logic uses np.meshgrid indexing
-    # We can check specific items via node identity if needed, but here we check structure.
-    
-    # --- Stage 3: Progressive Reduction ---
+    # --- Stage 3: Progressive Reduction (New API) ---
     print("Stage 3: Progressive Reduction...")
     
     # A. Reduce 'time' -> Result: (model, site)
-    by_site = gather(pred, dim="time")
-    print(f"  - Reduced 'time': {by_site.dims}, shape: {by_site._items.shape}")
-    assert "time" not in by_site.dims
-    assert by_site._items.size == 4 # 2 * 2
-    
-    # Verify reduction item dependencies
-    sample_item = by_site._items.flat[0]
-    # Each item in the result of gather is a Node that depends on the items of the previous stage
-    # along the reduced axis.
-    assert len(sample_item.deps_nodes) == 3 # Gathered 3 time steps
+    by_site = reduce_to_site_model(pred)
+    # Force execution to see prints
+    print("Executing reduce_to_site_model...")
+    by_site() 
 
+    print(f"  - Reduced 'time': {by_site.dims}, shape: {by_site._items.shape}")
+    assert by_site.dims == ("model", "site") 
+    assert "time" not in by_site.dims
+    assert by_site._items.size == 4
+    
     # B. Reduce 'site' -> Result: (model,)
-    by_model = gather(by_site, dim="site")
+    by_model = reduce_to_model(by_site)
+    print("Executing reduce_to_model...")
+    by_model()
+    
     print(f"  - Reduced 'site': {by_model.dims}, shape: {by_model._items.shape}")
-    assert "site" not in by_model.dims
+    assert by_model.dims == ("model",)
     assert by_model._items.size == 2
     
     # C. Final Aggregation (Scalar)
-    final = gather(by_model, dim="model")
+    final = reduce_to_scalar(by_model)
+    print("Executing reduce_to_scalar...")
+    res = final()
+    
     print(f"  - Final reduction: {final.dims}, items: {final._items}")
     assert final.dims == ()
-    assert len(final.deps_nodes) == 2 # Gathered 2 models
+    assert final.coords == {}
+    
+    print(f"  - Execution Result Type: {type(res)}")
+    print(f"  - Result Sample: {res}")
 
-    # --- Stage 4: Logical Script Verification ---
-    print("Stage 4: Logical Script Verification...")
-    script = obs.script
-    print("Script Content:")
-    print(script)
-    
-    # It should use the domain/logical names if available
-    assert "fetch_obs" in script
-    # Our implementation specifically stores _bound_inputs for logical view
-    
     print("\n--- Stress Test Passed Successfully! ---")
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
+import node
 from node import Config
 
 
 def test_scalar_interpolation(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def show_year(year: int) -> int:
         return year
 
@@ -16,5 +17,5 @@ def test_scalar_interpolation(runtime_factory):
         },
     }
     rt.config = Config(cfg)
-    node = show_year()
-    assert node() == 2023
+    n = show_year()
+    assert n() == 2023

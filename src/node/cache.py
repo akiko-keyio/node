@@ -125,20 +125,28 @@ class DiskJoblib(Cache):
 
     def get(self, fn_name: str, hash_value: int):
         p = self._path(fn_name, hash_value)
-        if not p.exists():
-            return False, None
-
+        
         try:
             if p.stat().st_size <= self.small_file:
-                with p.open("rb") as fh:
-                    return True, pickle.load(fh)
+                try:
+                    with p.open("rb") as fh:
+                        return True, pickle.load(fh)
+                except FileNotFoundError:
+                    return False, None
+            
+            # joblib.load raises FileNotFoundError if file is missing
             return True, joblib.load(p)
+
+        except FileNotFoundError:
+            return False, None
         except Exception as exc:  # pragma: no cover - defensive
             if isinstance(
                 exc, (pickle.UnpicklingError, EOFError, AttributeError, ValueError)
             ):
                 return self._handle_corrupt_cache(p, exc)
-            raise RuntimeError(f"Failed to load cache file {p}: {exc}") from exc
+            from .exceptions import CacheError
+            raise CacheError(f"Failed to load cache file {p}: {exc}") from exc
+            
 
     def _handle_corrupt_cache(self, path: Path, error: Exception) -> tuple[bool, None]:
         logger.error(

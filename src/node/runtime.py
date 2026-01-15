@@ -19,10 +19,11 @@ from weakref import WeakValueDictionary
 from loky import ProcessPoolExecutor
 from omegaconf import OmegaConf
 from pydantic import validate_call
+import numpy as np
 
 from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
 from .config import Config
-from .graph import build_graph
+from .core import build_graph
 from .logger import logger
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ def _call_fn(
     kwargs: dict[str, Any],
     node_key: str | None = None,
 ) -> Any:
-    from .reporters import _track_ctx
+    from .reporter import _track_ctx
 
     prev = getattr(_track_ctx, "node", None)
     if node_key is not None:
@@ -169,7 +170,7 @@ class Runtime:
         # Reporter
         if reporter is None:
             try:
-                from .reporters import RichReporter
+                from .reporter import RichReporter
                 self.reporter = RichReporter()
             except Exception:
                 self.reporter = None
@@ -186,111 +187,24 @@ class Runtime:
         """Restore the configuration used at initialization."""
         self.config.copy_from(self._initial_config)
 
-    def define(
-        self,
-        *,
-        ignore: Sequence[str] | None = None,
-        workers: int | None = None,
-        cache: bool = True,
-        local: bool = False,
-    ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
-        """Decorate a function to create a Node.
-
-        Parameters
-        ----------
-        ignore:
-            Argument names excluded from the cache key.
-        workers:
-            Maximum concurrency for this function. ``-1`` uses all cores.
-        cache:
-            Whether to cache the result.
-        local:
-            Execute directly in the caller thread, bypassing any executor.
-        """
-        ignore_set = set(ignore or [])
-
-        def deco(fn: Callable[..., Any]) -> Callable[..., Node]:
-            # Check for closure variables
-            if fn.__closure__ is not None:
-                warnings.warn(
-                    f"Function '{fn.__name__}' uses closure variables. "
-                    f"This may violate purity constraints as closure variables "
-                    f"are not included in the node's cache key. "
-                    f"Consider passing all dependencies as explicit parameters.",
-                    category=UserWarning,
-                    stacklevel=2,
-                )
-            
-            sig_obj = inspect.signature(fn)
-            node_attrs = {
-                "_node_ignore": ignore_set,
-                "_node_sig": sig_obj,
-                "_node_local": local,
-            }
-
-            for k, v in node_attrs.items():
-                setattr(fn, k, v)
-
-            validated_fn: Callable[..., Any] | None = None
-
-            def get_validated_fn() -> Callable[..., Any]:
-                nonlocal validated_fn
-                if validated_fn is None:
-                    validated_fn = validate_call(
-                        fn,
-                        config={"arbitrary_types_allowed": True},
-                    )
-                    for k, v in node_attrs.items():
-                        setattr(validated_fn, k, v)
-                return validated_fn
-
-            @functools.wraps(fn)
-            def wrapper(*args, **kwargs) -> "Node":
-                from .core import Node
-                nonlocal validated_fn
-                current_runtime = get_runtime()
-                effective_workers = (
-                    workers if workers is not None else current_runtime.workers
-                )
-                if current_runtime.validate:
-                    selected_fn = get_validated_fn()
-                else:
-                    selected_fn = fn
-                setattr(selected_fn, "_node_workers", effective_workers)
-                bound = sig_obj.bind_partial(*args, **kwargs)
-                for name, val in current_runtime.config.defaults(
-                    fn.__name__,
-                    runtime=current_runtime,
-                ).items():
-                    if name not in bound.arguments:
-                        bound.arguments[name] = val
-                bound.apply_defaults()
-
-                node = Node(selected_fn, bound.arguments, cache=cache)
-                cached_node = current_runtime._registry.get(node)
-                if cached_node is not None:
-                    return cached_node
-                current_runtime._registry[node] = node
-                return node
-
-            wrapper.__signature__ = sig_obj  # type: ignore[attr-defined]
-            
-            return wrapper
-
-        return deco
-
-
 
     def _resolve(self, v):
-        """递归解析参数值，将 Node 替换为其缓存的计算结果。"""
+        """Recursively resolve parameter values, replacing Nodes with their cached results."""
         from .core import Node
         if isinstance(v, Node):
             hit, val = self.cache.get(v.fn.__name__, v._hash)
             return val if hit else None
-        elif isinstance(v, tuple):
-            return tuple(self._resolve(item) for item in v)
-        elif isinstance(v, list):
-            return [self._resolve(item) for item in v]
+        elif isinstance(v, dict):
+            return {k: self._resolve(item) for k, item in v.items()}
+        elif isinstance(v, (list, tuple)):
+            items = [self._resolve(item) for item in v]
+            return tuple(items) if isinstance(v, tuple) else items
+        elif isinstance(v, np.ndarray):
+            if v.dtype == object:
+                # Recursively resolve Nodes inside the array
+                res = [self._resolve(item) for item in v.flat]
+                return np.array(res, dtype=object).reshape(v.shape)
+            return v
         return v
 
     def _fail_node(
@@ -346,7 +260,7 @@ class Runtime:
             return self._results[n._hash]
 
         start = time.perf_counter()
-        if any(d._hash in self._failed for d in n.deps_nodes):
+        if any(d._hash in self._failed for d in n._exec_deps):
             self._fail_node(n, start, sem)
             return None
         if self.on_node_start is not None:
@@ -361,6 +275,45 @@ class Runtime:
             if sem is not None:
                 sem.release()
             return val
+
+        # Helper to resolve a node recursively
+        def resolve_val(v):
+             from .core import Node
+             if isinstance(v, Node):
+                 if v._hash in self._results:
+                     return self._results[v._hash]
+                 # Should not happen if deps are correct
+                 return None
+             return v
+
+        if n._items is not None:
+             # VectorNode / Reduction Node:
+             # The result is the aggregation of its items (which are dependencies).
+             from .dimension import DimensionedResult
+             
+             results = [resolve_val(item) for item in n._items.flat]
+             
+             # Reconstruct array structure
+             # Use np.empty to prevent numpy from inferring dimensions from the elements (if they are lists)
+             val_flat = np.empty(len(results), dtype=object)
+             val_flat[:] = results
+             val_array = val_flat.reshape(n._items.shape)
+             
+             # Return as DimensionedResult if has dimensions, else unwrap scalar
+             if n.dims:
+                 val = DimensionedResult(val_array, dims=n.dims, coords=n.coords)
+             else:
+                 val = val_array.item()
+             
+             with self._lock:
+                 self._results[n._hash] = val
+             
+             dur = time.perf_counter() - start
+             if self.on_node_end is not None:
+                 self.on_node_end(n, dur, True, False)
+             if sem is not None:
+                 sem.release()
+             return val
 
         # Resolve arguments from inputs and call function
         resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
@@ -447,7 +400,7 @@ class Runtime:
         pool_kwargs: dict[str, Any] = {"max_workers": self.workers}
         if self.executor == "process":
             from multiprocessing import Queue
-            from .reporters import _set_process_queue, _worker_init
+            from .reporter import _set_process_queue, _worker_init
 
             proc_q = Queue()
             _set_process_queue(proc_q)
@@ -468,7 +421,7 @@ class Runtime:
         with pool_cls(**pool_kwargs) as pool:
 
             def submit(node):
-                if any(d._hash in self._failed for d in node.deps_nodes):
+                if any(d._hash in self._failed for d in node._exec_deps):
                     self._fail_node(node, time.perf_counter(), None)
                     ts.done(node)
                     for ready in ts.get_ready():
@@ -545,7 +498,7 @@ class Runtime:
 
         wall = time.perf_counter() - t0
         if proc_q is not None:
-            from .reporters import _set_process_queue
+            from .reporter import _set_process_queue
             _set_process_queue(None)
         self.on_node_start = orig_start
         self.on_node_end = orig_end

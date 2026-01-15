@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import inspect
 from functools import wraps
 from typing import Any, Callable, TYPE_CHECKING
 import numpy as np
@@ -9,17 +10,35 @@ import numpy as np
 if TYPE_CHECKING:
     from .core import Node
 
+__all__ = ["dimension", "broadcast", "DimensionedResult"]
+
+
+def _get_layout_from_sig(fn: Callable, known_dims: set[str]) -> tuple[list[str], list[str]]:
+    """Determine expected dimension layout from function signature."""
+    try:
+        sig = inspect.signature(fn)
+    except ValueError:
+         return [], []
+
+    dim_args = []
+    other_args = []
+    
+    for name, param in sig.parameters.items():
+        if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+            
+        if name in known_dims:
+            dim_args.append(name)
+        else:
+            other_args.append(name)
+            
+    return dim_args, other_args
+
+
+
+
 def dimension(name: str | None = None):
-    """Decorator to define a dimension node.
-    
-    The decorated function must return a list of values.
-    
-    Args:
-        name: Optional name for the dimension. Defaults to function name.
-        
-    Returns:
-        A decorator that converts the function into a Vector Node factory.
-    """
+    """Decorator to define a dimension node."""
     import inspect
     from .core import Node
     
@@ -28,32 +47,24 @@ def dimension(name: str | None = None):
         
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            # 1. Eager Execution
             raw_values = fn(*args, **kwargs)
             if not isinstance(raw_values, list):
                 raw_values = list(raw_values)
             
-            # 2. Vector Encapsulation
             dim_name = name or fn.__name__
             
-            # Bind arguments for logical inputs
             bound = sig.bind(*args, **kwargs)
             bound.apply_defaults()
-            logical_inputs = bound.arguments
             
-            # Create Vector Node
-            # The Vector Node represents the generator function call
-            vector_node = Node(
+            node = Node(
                 fn=fn,
-                inputs=logical_inputs,
+                inputs=bound.arguments,
                 cache=True, 
                 dims=(dim_name,),
                 coords={dim_name: raw_values},
             )
-            # Store raw values directly (optimization: no _identity wrapper)
-            vector_node._items = np.array(raw_values, dtype=object)
-            
-            return vector_node
+            node._items = np.array(raw_values, dtype=object)
+            return node
             
         return wrapper
     return decorator
@@ -64,59 +75,164 @@ def broadcast(
     inputs: dict[str, Any],
     vector_inputs: dict[str, "Node"],
     cache: bool,
+    target_dims: tuple[str, ...] | None = None,
 ) -> tuple[tuple[str, ...], dict[str, list[Any]], np.ndarray]:
-    """Perform broadcasting logic for Vector Nodes.
+    """Perform broadcasting logic for Vector Nodes with Partial Slicing support.
     
     Args:
         fn: The function being called.
-        inputs: All inputs to the function (mixed scalar/vector).
+        inputs: All inputs.
         vector_inputs: Subset of inputs that are Vector Nodes.
-        cache: Cache setting for generated scalar nodes.
-        
-    Returns:
-        Tuple of (sorted_dims, coord_dict, items_array).
+        cache: Cache setting.
+        target_dims: If provided, specific dimensions to broadcast over. 
+                     Dimensions in inputs but NOT in target_dims are passed as full slices (vectors).
+                     If None, defaults to Union of all input dims.
     """
     from .core import Node
     
-    # 1. Collect Dimensions & Validate (Identity Check)
-    all_dims: dict[str, list[Any]] = {}  # dim_name -> coords
+    # 1. Collect Dimensions & Validate
+    available_dims: dict[str, list[Any]] = {} 
     
-    seen_dims = set()
+    seen = set()
     for node in vector_inputs.values():
         for d in node.dims:
-            if d not in seen_dims:
-                seen_dims.add(d)
-                all_dims[d] = node.coords[d] 
+            if d not in seen:
+                seen.add(d)
+                available_dims[d] = node.coords[d] 
             else:
-                if all_dims[d] is not node.coords[d]:
-                    raise ValueError(
-                        f"Dimension mismatch: '{d}' found with different coordinate instances."
-                    )
+                existing = available_dims[d]
+                if existing is not node.coords[d]:
+                     is_equal = np.array_equal(node.coords[d], existing) if (isinstance(node.coords[d], np.ndarray) or isinstance(existing, np.ndarray)) else (node.coords[d] == existing)
+                     
+                     if not is_equal:
+                        from .exceptions import DimensionMismatchError
+                        raise DimensionMismatchError(f"Dimension Mismatch: '{d}' conflict.")
     
-    sorted_dims = tuple(sorted(all_dims.keys()))
-    shape = tuple(len(all_dims[d]) for d in sorted_dims)
+    # 2. Determine Broadcast Dimensions
+    if target_dims is None:
+        broadcast_dims = tuple(sorted(available_dims.keys()))
+    else:
+        broadcast_dims = target_dims
+        
+    shape = tuple(len(available_dims[d]) for d in broadcast_dims)
     
-    # 2. Virtual Expansion
+    # Parse signature to see which coords need injection
+    # We look for ANY dimension available
+    dims_to_inject, _ = _get_layout_from_sig(fn, set(available_dims.keys()))
+    
+    # 3. Virtual Expansion
     ranges = [range(s) for s in shape]
     items_flat = []
-    dim_to_idx = {d: i for i, d in enumerate(sorted_dims)}
+    
+    # Pre-compute indices mapping
+    bcast_dim_to_idx = {d: i for i, d in enumerate(broadcast_dims)}
     
     for indices in itertools.product(*ranges):
         scalar_inputs = {}
-        for arg_name, arg_val in inputs.items():
-            if isinstance(arg_val, Node) and arg_val.dims:
-                node_indices = []
-                for d in arg_val.dims:
-                    global_idx_pos = dim_to_idx[d]
-                    idx_val = indices[global_idx_pos]
-                    node_indices.append(idx_val)
-                item = arg_val._items[tuple(node_indices)]
-                scalar_inputs[arg_name] = item
+        for k, v in inputs.items():
+            if isinstance(v, Node) and v.dims:
+                # determine slice
+                slice_key = []
+                for d in v.dims:
+                    if d in bcast_dim_to_idx:
+                        idx_pos = bcast_dim_to_idx[d]
+                        slice_key.append(indices[idx_pos])
+                    else:
+                        slice_key.append(slice(None))
+                
+                try:
+                    item = v._items[tuple(slice_key)]
+                    scalar_inputs[k] = item
+                except Exception as e:
+                    # Fallback or re-raise
+                    raise e
             else:
-                scalar_inputs[arg_name] = arg_val
+                scalar_inputs[k] = v
         
-        scalar_node = Node(fn=fn, inputs=scalar_inputs, cache=cache)
-        items_flat.append(scalar_node)
+        # Inject Current Coordinates (Implicit Args)
+        for d in dims_to_inject:
+             if d in scalar_inputs:
+                 continue
+                 
+             if d in bcast_dim_to_idx:
+                 idx = indices[bcast_dim_to_idx[d]]
+                 scalar_inputs[d] = available_dims[d][idx]
+             else:
+                 # It is not broadcast, so pass full vector (gather)
+                 scalar_inputs[d] = available_dims[d]
+
+        items_flat.append(Node(fn=fn, inputs=scalar_inputs, cache=cache))
         
     items_array = np.array(items_flat, dtype=object).reshape(shape)
-    return sorted_dims, all_dims, items_array
+    
+    # Filter coords
+    out_coords = {d: available_dims[d] for d in broadcast_dims if d in available_dims}
+    
+    return broadcast_dims, out_coords, items_array
+
+
+class DimensionedResult(np.ndarray):
+    """A numpy array subclass that carries dimension metadata.
+    
+    Attributes:
+        dims: Tuple of dimension names, ordered to match array axes.
+        coords: Dict mapping dimension names to coordinate values.
+    """
+    
+    dims: tuple[str, ...]
+    coords: dict[str, list[Any]]
+    
+    def __new__(
+        cls,
+        input_array: np.ndarray,
+        dims: tuple[str, ...] = (),
+        coords: dict[str, list[Any]] | None = None,
+    ) -> "DimensionedResult":
+        """Create a new DimensionedResult instance.
+        
+        Args:
+            input_array: The underlying numpy array.
+            dims: Dimension names in axis order.
+            coords: Coordinate values for each dimension.
+        """
+        obj = np.asarray(input_array).view(cls)
+        obj.dims = dims
+        obj.coords = coords or {}
+        return obj
+    
+    def __array_finalize__(self, obj: np.ndarray | None) -> None:
+        """Preserve attributes when array operations create new instances."""
+        if obj is None:
+            return
+        self.dims = getattr(obj, "dims", ())
+        self.coords = getattr(obj, "coords", {})
+    
+    def transpose(self, *order: str) -> "DimensionedResult":
+        """Transpose axes by dimension names.
+        
+        Args:
+            *order: Dimension names in desired order.
+        
+        Returns:
+            Transposed DimensionedResult with updated dims.
+        
+        Raises:
+            ValueError: If order doesn't match current dims.
+        """
+        if set(order) != set(self.dims):
+            raise ValueError(
+                f"Order {order} doesn't match dims {self.dims}"
+            )
+        
+        # Compute axis permutation
+        perm = tuple(self.dims.index(d) for d in order)
+        
+        # Transpose data
+        result = super().transpose(perm).view(DimensionedResult)
+        result.dims = order
+        result.coords = self.coords  # Coords dict unchanged, keys still valid
+        return result
+    
+    def __repr__(self) -> str:
+        dims_str = ", ".join(f"{d}:{len(self.coords.get(d, []))}" for d in self.dims)
+        return f"DimensionedResult({super().__repr__()}, dims=({dims_str}))"

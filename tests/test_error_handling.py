@@ -1,12 +1,15 @@
+import node
+
+
 def test_continue_on_error(runtime_factory, capsys):
     rt = runtime_factory()
     rt.continue_on_error = True
 
-    @rt.define()
+    @node.define()
     def fail():
         raise RuntimeError("boom")
 
-    @rt.define()
+    @node.define()
     def inc(x):
         return (x or 0) + 1
 

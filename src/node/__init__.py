@@ -24,14 +24,14 @@ See Also
 --------
 node.define : Decorate a function to create a Node.
 node.run : Execute the entire DAG.
-node.gather : Aggregate multiple nodes.
 """
 
 from collections.abc import Callable, Generator
 from typing import Any
 
 # Core exports
-from .core import Node, gather, dimension
+from .core import Node, dimension, define
+from .exceptions import NodeError, ConfigurationError, DimensionMismatchError, CacheError
 from .cache import Cache, ChainCache, MemoryLRU, DiskJoblib
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
@@ -63,42 +63,6 @@ def run(root: Node, *, reporter=None, cache_root: bool = True):
     return get_runtime().run(root, reporter=reporter, cache_root=cache_root)
 
 
-def define(
-    *,
-    ignore: list[str] | None = None,
-    workers: int | None = None,
-    cache: bool = True,
-    local: bool = False,
-):
-    """Decorate a function to create a Node.
-
-    Parameters
-    ----------
-    ignore : list[str], optional
-        Argument names excluded from the cache key.
-    workers : int, optional
-        Maximum concurrency for this function. ``-1`` uses all cores.
-    cache : bool, optional
-        Whether to cache the result. Defaults to True.
-    local : bool, optional
-        Execute directly in the caller thread, bypassing any executor. 
-        Defaults to False.
-
-    Returns
-    -------
-    Callable
-        A decorator that converts the function into a Node factory.
-
-    Examples
-    --------
-    >>> @node.define(workers=2)
-    ... def slow_task(x):
-    ...     time.sleep(1)
-    ...     return x
-    """
-    return get_runtime().define(ignore=ignore, workers=workers, cache=cache, local=local)
-
-
 class _CfgProxy:
     """Proxy object for convenient access to runtime configuration.
     
@@ -125,7 +89,7 @@ track: Callable[..., Generator[Any, None, None]] | None = None
 RichReporter: type | None = None
 
 try:
-    from .reporters import RichReporter as _RichReporter, track as _track
+    from .reporter import RichReporter as _RichReporter, track as _track
 
     RichReporter = _RichReporter
     track = _track
@@ -137,9 +101,13 @@ __all__ = [
     "configure",
     "define",
     "run",
-    "gather",
     "dimension",
     "reset",
+    # Exceptions
+    "NodeError",
+    "ConfigurationError",
+    "DimensionMismatchError",
+    "CacheError",
     # Core classes
     "Node",
     "Runtime",

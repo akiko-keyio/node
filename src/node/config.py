@@ -39,11 +39,31 @@ class Config:
             instantiation. Defaults to ``False``.
         """
         if isinstance(mapping, (str, Path)):
-            self._conf: DictConfig = OmegaConf.load(str(mapping))
+            try:
+                object.__setattr__(self, "_conf", OmegaConf.load(str(mapping)))
+            except Exception as e:
+                from .exceptions import ConfigurationError
+                raise ConfigurationError(f"Failed to load config from {mapping}: {e}") from e
         else:
-            self._conf = OmegaConf.create(mapping or {})
-        self._cache_nodes = cache_nodes
-        self._nodes: dict[str, "Node"] = {}
+            object.__setattr__(self, "_conf", OmegaConf.create(mapping or {}))
+        object.__setattr__(self, "_cache_nodes", cache_nodes)
+        object.__setattr__(self, "_nodes", {})
+
+    def __getattr__(self, name: str) -> Any:
+        """Allow attribute-style access to config values."""
+        if name.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+        try:
+            return self._conf[name]
+        except (KeyError, TypeError):
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Allow attribute-style setting of config values."""
+        if name.startswith("_"):
+            object.__setattr__(self, name, value)
+        else:
+            self._conf[name] = value
 
     def _resolve_with_presets(self, cfg: DictConfig) -> DictConfig:
         """Resolve a config that may contain _presets_.

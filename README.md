@@ -38,7 +38,7 @@ print(node1())  # 25
 
 ## 自动缓存
 
-根据节点标识（缓存键）维护计算结果，避免重复计算：
+计算结果自动缓存，相同输入不重复计算：
 
 ```python
 import time
@@ -48,57 +48,45 @@ def slow_compute(x):
     time.sleep(2)
     return x * 2
 
-# 第一次执行：计算并写入缓存（耗时2秒）
-result = slow_compute(5)()
-
-# 第二次执行：检测到相同的缓存键，直接返回结果（瞬间完成）
-result = slow_compute(5)()
-
-# 参数变化：重新计算
-result = slow_compute(6)()  # 2秒
+result = slow_compute(5)()  # 首次：2秒
+result = slow_compute(5)()  # 缓存命中：瞬间
+result = slow_compute(6)()  # 参数变化：重新计算
 ```
 
-**节点标识**
+### 缓存键
 
-缓存的关键在于如何唯一标识每个计算节点。节点标识定义为：
+每个节点通过以下公式生成唯一标识：
 
 ```text
-节点标识 = hash(函数名 + 参数 + 依赖节点的标识)
+缓存键 = hash(函数名 + 参数 + 依赖节点的缓存键)
 ```
 
-如果满足以下条件，节点标识确定了唯一的输出结果：
-
+满足以下条件，相同缓存键生成相同结果：
 - 相同函数名确定了相同的计算逻辑
 - 所有影响结果的参数、依赖节点都被考虑（纯函数）
-- 依赖节点的标识确定了唯一的依赖节点的结果
 
-**纯函数要求**
-
-为确保节点标识与输出结果的一一对应，所有使用 `@node.define` 装饰的函数必须是**纯函数**：
-
-- 相同的输入永远产生相同的输出
-- 不产生副作用（不修改外部状态、不执行 I/O）
+### 纯函数要求
 
 ```python
-# ✅ 正确
+# ✅ 纯函数：相同输入 → 相同输出
 @node.define()
 def process(data, threshold):
     return [x for x in data if x > threshold]
 
-# ❌ 错误：依赖闭包变量
+# ❌ 闭包变量：factor 不在缓存键中
 def make_processor(factor):
     @node.define()
     def process(x):
-        return x * factor  # factor 不在缓存键中
+        return x * factor
     return process
 
-# ❌ 错误：非确定性
+# ❌ 非确定性输出
 @node.define()
 def generate(n):
     return [random.random() for _ in range(n)]
 ```
 
-**缓存后端**
+### 缓存后端
 
 默认使用两级缓存：内存 LRU → 磁盘持久化。可通过 `node.configure()` 自定义：
 
@@ -107,8 +95,8 @@ from node import ChainCache, MemoryLRU, DiskJoblib
 
 node.configure(
     cache=ChainCache([
-        MemoryLRU(maxsize=512),       # 内存缓存，LRU 淘汰
-        DiskJoblib(root=".cache"),    # 磁盘缓存
+        MemoryLRU(maxsize=512),     # 热数据快速访问
+        DiskJoblib(root=".cache"),  # 冷数据持久化
     ])
 )
 ```
@@ -123,32 +111,39 @@ node.configure(
 
 ## 结果追溯
 
-缓存基于节点标识，但哈希值是不可逆的。为支持调试和复现，框架提供了两种方式查看完整的计算过程：
+缓存键是哈希值，不可逆。为支持**调试复现**，框架提供完整的计算脚本：
 
-**方式一**：通过 `repr(node)` 获取可执行的 Python 脚本：
+**方式一**：`repr(node)` 生成可执行脚本
 
 ```python
-a = A()
-root = D(B(a), C(a))
+@node.define()
+def A(): return 1
+
+@node.define()
+def B(a): return a + 1
+
+root = B(A())
 print(repr(root))
 ```
+
+输出：
 
 ```python
 # hash = 7c3b8fad541e11
 A_0 = A()
 B_0 = B(a=A_0)
-C_0 = C(a=A_0)
-D_0 = D(b=B_0, c=C_0)
 ```
 
-**方式二**：配置磁盘缓存 `DiskJoblib` 后，复现脚本自动保存在缓存目录：
+**方式二**：磁盘缓存自动保存脚本
 
 ```text
 .cache/
-├── D/
+├── B/
 │   ├── 7c3b8fad541e11.pkl    # 计算结果
-│   └── 7c3b8fad541e11.py     # 复现脚本（内容同上）
+│   └── 7c3b8fad541e11.py     # 复现脚本
 ```
+
+运行 `.py` 文件即可复现完整计算过程。
 
 ---
 
@@ -180,7 +175,7 @@ d1, d2, d3 = download(url1), download(url2), download(url3)
 results = gather([parse(d1), parse(d2), parse(d3)]).get()
 ```
 
-**执行器配置**
+### 执行器配置
 
 ```python
 node.configure(

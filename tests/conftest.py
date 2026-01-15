@@ -28,6 +28,10 @@ def runtime_factory(tmp_path):
         cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
         kwargs.setdefault("continue_on_error", False)
         kwargs.setdefault("validate", False)
-        return configure(cache=cache, **kwargs)
+        # kwargs.setdefault("reporter", None) # This triggers default RichReporter!
+        rt = configure(cache=cache, **kwargs)
+        if "reporter" not in kwargs:
+            rt.reporter = None
+        return rt
 
     return _make

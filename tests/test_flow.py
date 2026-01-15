@@ -2,6 +2,7 @@ from pathlib import Path
 from contextlib import nullcontext
 import threading
 
+import node
 from node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
 import pytest
 
@@ -9,11 +10,11 @@ import pytest
 def test_flow_example(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    @rt.define()
+    @node.define()
     def square(z):
         return z * z
 
@@ -24,14 +25,14 @@ def test_flow_example(runtime_factory):
 def test_node_get(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    node = add(2, 3)
-    assert node() == 5
+    n = add(2, 3)
+    assert n() == 5
     # Second call should reuse cache
-    assert node() == 5
+    assert n() == 5
 
 
 
@@ -39,17 +40,17 @@ def test_cache_skips_execution(runtime_factory):
     rt = runtime_factory()
     calls = []
 
-    @rt.define()
+    @node.define()
     def double(x):
         calls.append(x)
         return x * 2
 
-    node = double(4)
-    assert rt.run(node) == 8
+    n = double(4)
+    assert rt.run(n) == 8
     assert calls == [4]
 
     # Second run should come entirely from cache
-    assert rt.run(node) == 8
+    assert rt.run(n) == 8
     assert calls == [4]
 
 
@@ -57,22 +58,22 @@ def test_create_overwrites_cache(runtime_factory):
     rt = runtime_factory()
     calls = []
 
-    @rt.define()
+    @node.define()
     def add(x):
         calls.append(x)
         return x + 1
 
-    node = add(1)
-    assert rt.run(node) == 2
+    n = add(1)
+    assert rt.run(n) == 2
     assert calls == [1]
     # cache hit
-    assert node() == 2
+    assert n() == 2
     assert calls == [1]
 
-    assert node(force=True) == 2
+    assert n(force=True) == 2
     assert calls == [1, 1]
     # subsequent run uses cache again
-    assert node() == 2
+    assert n() == 2
     assert calls == [1, 1]
 
 
@@ -80,19 +81,19 @@ def test_get_no_cache(runtime_factory):
     rt = runtime_factory()
     calls = []
 
-    @rt.define(cache=False)
+    @node.define(cache=False)
     def inc(x):
         calls.append(x)
         return x + 1
 
-    node = inc(2)
+    n = inc(2)
 
-    assert node() == 3
+    assert n() == 3
     assert calls == [2]
-    assert node() == 3
+    assert n() == 3
     assert calls == [2, 2]
 
-    assert node() == 3
+    assert n() == 3
     assert calls == [2, 2, 2]
 
 
@@ -100,51 +101,51 @@ def test_defaults_override(runtime_factory):
     conf = Config({"add": {"y": 5}})
     rt = runtime_factory(config=conf)
 
-    @rt.define()
+    @node.define()
     def add(x, y=1):
         return x + y
 
-    node = add(3)
-    assert rt.run(node) == 8
+    n = add(3)
+    assert rt.run(n) == 8
 
 
 def test_positional_args_ignore_config(runtime_factory):
     conf = Config({"add": {"y": 5}})
     rt = runtime_factory(config=conf)
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    node = add(2, 3)
-    assert rt.run(node) == 5
+    n = add(2, 3)
+    assert rt.run(n) == 5
 
 
 def test_config_from_yaml(runtime_factory):
     cfg_path = Path(__file__).with_name("config.yaml")
     rt = runtime_factory(config=Config(cfg_path))
 
-    @rt.define()
+    @node.define()
     def add(x, y=1):
         return x + y
 
-    node = add(3)
-    assert rt.run(node) == 8
+    n = add(3)
+    assert rt.run(n) == 8
 
 
 def test_build_script_repr(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    @rt.define()
+    @node.define()
     def square(z):
         return z * z
 
-    node = square(add(2, 3))
-    lines = repr(node).strip().splitlines()
+    n = square(add(2, 3))
+    lines = repr(n).strip().splitlines()
     # New format: header + simplified variable names
     assert lines[0].startswith("# hash = ")
     assert "add_0 = add(x=2, y=3)" in lines[1]
@@ -154,20 +155,20 @@ def test_build_script_repr(runtime_factory):
 def test_linear_chain_repr(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def f1(a):
         return a
 
-    @rt.define()
+    @node.define()
     def f2(a):
         return a
 
-    @rt.define()
+    @node.define()
     def f3(a):
         return a
 
-    node = f1(f2(f3(1)))
-    lines = repr(node).strip().splitlines()
+    n = f1(f2(f3(1)))
+    lines = repr(n).strip().splitlines()
     # New format: header + simplified variable names
     assert lines[0].startswith("# hash = ")
     assert "f3_0 = f3(a=1)" in lines[1]
@@ -179,22 +180,22 @@ def test_diamond_dependency(runtime_factory):
     rt = runtime_factory()
     calls = []
 
-    @rt.define()
+    @node.define()
     def base(x):
         calls.append("base")
         return x + 1
 
-    @rt.define()
+    @node.define()
     def left(a):
         calls.append("left")
         return a * 2
 
-    @rt.define()
+    @node.define()
     def right(a):
         calls.append("right")
         return a + 3
 
-    @rt.define()
+    @node.define()
     def final(x, y):
         calls.append("final")
         return x + y
@@ -219,7 +220,7 @@ def test_diamond_dependency(runtime_factory):
 def test_node_deduplication(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
@@ -232,16 +233,16 @@ def test_repr_shared_nodes(runtime_factory):
     """repr should reuse the same variable for identical nodes."""
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    @rt.define()
+    @node.define()
     def combine(a, b):
         return a + b
 
-    node = combine(add(1, 2), add(1, 2))
-    lines = repr(node).strip().splitlines()
+    n = combine(add(1, 2), add(1, 2))
+    lines = repr(n).strip().splitlines()
     # New format: header + simplified variable names (deduped)
     assert lines[0].startswith("# hash = ")
     assert "add_0 = add(x=1, y=2)" in lines[1]
@@ -252,7 +253,7 @@ def test_set_canonicalization(runtime_factory):
     rt = runtime_factory()
     calls = []
 
-    @rt.define()
+    @node.define()
     def identity(x):
         calls.append(1)
         return x
@@ -273,32 +274,32 @@ def test_chaincache_promotion(runtime_factory, tmp_path):
     disk = DiskJoblib(tmp_path)
     rt = runtime_factory(cache=ChainCache([mem, disk]))
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    node = add(2, 3)
-    rt.run(node)
-    assert node._hash in mem._lru
+    n = add(2, 3)
+    rt.run(n)
+    assert n._hash in mem._lru
 
     mem._lru.clear()
-    assert node._hash not in mem._lru
+    assert n._hash not in mem._lru
 
-    rt.run(node)
-    assert node._hash in mem._lru
+    rt.run(n)
+    assert n._hash in mem._lru
 
 
 def test_parallel_execution(runtime_factory):
     rt = runtime_factory(executor="thread", workers=2)
 
-    @rt.define()
+    @node.define()
     def slow(v):
         import time
 
         time.sleep(0.2)
         return v
 
-    @rt.define()
+    @node.define()
     def combine(a, b):
         return a + b
 
@@ -314,14 +315,14 @@ def test_parallel_execution(runtime_factory):
 def test_node_worker_limit(runtime_factory):
     rt = runtime_factory(executor="thread", workers=4)
 
-    @rt.define(workers=1)
+    @node.define(workers=1)
     def slow(v):
         import time
 
         time.sleep(0.2)
         return v
 
-    @rt.define()
+    @node.define()
     def combine(a, b):
         return a + b
 
@@ -349,7 +350,7 @@ def test_no_thread_pool_for_single_worker(runtime_factory, monkeypatch, dw, nw):
 
     rt = runtime_factory(executor="thread", workers=dw)
 
-    @rt.define(workers=nw)
+    @node.define(workers=nw)
     def slow(v):
         return v
 
@@ -361,13 +362,13 @@ def test_no_thread_pool_for_single_worker(runtime_factory, monkeypatch, dw, nw):
 def test_local_node_runs_in_main_thread(runtime_factory):
     rt = runtime_factory(executor="thread", workers=2)
 
-    @rt.define(local=True)
+    @node.define(local=True)
     def which_thread() -> str:
         import threading
 
         return threading.current_thread().name
 
-    @rt.define()
+    @node.define()
     def wrapper(v: str) -> tuple[str, str]:
         import threading
 
@@ -393,7 +394,7 @@ def test_cycle_detection():
 def test_dict_canonicalization(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def ident(x):
         return x
 
@@ -417,16 +418,16 @@ def test_callbacks_invoked(runtime_factory):
     rt.on_node_end = on_node_end
     rt.on_flow_end = on_flow_end
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    node = add(1, 2)
-    assert rt.run(node) == 3
+    n = add(1, 2)
+    assert rt.run(n) == 3
     assert events == [("node", False, False), ("rt", 1, 0)]
 
     events.clear()
-    assert rt.run(node) == 3
+    assert rt.run(n) == 3
     assert events == [("node", True, False), ("rt", 0, 0)]
 
 
@@ -434,19 +435,19 @@ def test_cache_scripts(runtime_factory, tmp_path):
     disk = DiskJoblib(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
 
-    @rt.define()
+    @node.define()
     def base(x):
         return x + 1
 
-    @rt.define()
+    @node.define()
     def left(a):
         return a * 2
 
-    @rt.define()
+    @node.define()
     def right(a):
         return a + 3
 
-    @rt.define()
+    @node.define()
     def final(x, y):
         return x + y
 
@@ -465,7 +466,7 @@ def test_cache_fallback_hash(runtime_factory, tmp_path, monkeypatch):
     disk = DiskJoblib(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
 
-    @rt.define()
+    @node.define()
     def inc(x):
         return x + 1
 
@@ -479,15 +480,15 @@ def test_cache_fallback_hash(runtime_factory, tmp_path, monkeypatch):
 
     monkeypatch.setattr(disk, "put", bad_first_put)
 
-    node = inc(5)
+    n = inc(5)
     with pytest.raises(OSError):
-        rt.run(node)
+        rt.run(n)
 
 
 def test_ignore_signature_fields(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define(ignore=["large_df", "model"])
+    @node.define(ignore=["large_df", "model"])
     def add(x, y, large_df=None, model=None):
         return x + y
 
@@ -505,24 +506,24 @@ def test_delete_cache(runtime_factory, tmp_path):
     rt = runtime_factory(cache=ChainCache([mem, disk]))
     calls = []
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         calls.append(1)
         return x + y
 
-    node = add(1, 2)
-    assert rt.run(node) == 3
-    assert node._hash in mem._lru
+    n = add(1, 2)
+    assert rt.run(n) == 3
+    assert n._hash in mem._lru
 
-    p = disk._path(node.fn.__name__, node._hash)
+    p = disk._path(n.fn.__name__, n._hash)
     assert p.exists()
 
-    node.invalidate()
+    n.invalidate()
 
-    assert node._hash not in mem._lru
+    assert n._hash not in mem._lru
     assert not p.exists()
 
-    assert rt.run(node) == 3
+    assert rt.run(n) == 3
     assert calls == [1, 1]
 
 
@@ -538,17 +539,17 @@ def test_default_reporter(runtime_factory):
     reporter = DummyReporter()
     rt = runtime_factory(reporter=reporter)
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
-    node = add(1, 2)
-    assert rt.run(node) == 3
+    n = add(1, 2)
+    assert rt.run(n) == 3
     assert reporter.count == 1
 
-    node.invalidate()
+    n.invalidate()
     extra = DummyReporter()
-    assert rt.run(node, reporter=extra) == 3
+    assert rt.run(n, reporter=extra) == 3
     assert reporter.count == 1
     assert extra.count == 1
 
@@ -556,7 +557,7 @@ def test_default_reporter(runtime_factory):
 def test_concurrent_node_construction(runtime_factory):
     rt = runtime_factory()
 
-    @rt.define()
+    @node.define()
     def add(x, y):
         return x + y
 
@@ -577,15 +578,15 @@ def test_concurrent_node_construction(runtime_factory):
 def test_deep_chain_signature(runtime_factory):
     rt = runtime_factory(cache=MemoryLRU())
 
-    @rt.define()
+    @node.define()
     def inc(x):
         return x + 1
 
-    node = inc(0)
+    n = inc(0)
     for _ in range(200):
-        node = inc(node)
+        n = inc(n)
 
-    assert rt.run(node) == 201
+    assert rt.run(n) == 201
 
 
 def test_cached_dependency_skips_upstream(runtime_factory):
@@ -601,19 +602,19 @@ def test_cached_dependency_skips_upstream(runtime_factory):
     cache = TrackingCache()
     rt = runtime_factory(cache=cache)
 
-    @rt.define()
+    @node.define()
     def c():
         return 1
 
     c_node = c()
 
-    @rt.define()
+    @node.define()
     def b(x):
         return x + 1
 
     b_node = b(c_node)
 
-    @rt.define()
+    @node.define()
     def a(y):
         return y + 1
 
@@ -627,3 +628,4 @@ def test_cached_dependency_skips_upstream(runtime_factory):
     assert rt.run(root) == 3
     assert c_node._hash not in cache.calls
     assert b_node._hash in cache.calls
+

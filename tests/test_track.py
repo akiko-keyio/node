@@ -1,6 +1,6 @@
 from rich.console import Console
 import node
-from node.reporters import RichReporter, track
+from node.reporter import RichReporter, track
 
 
 def test_track_inside_node():

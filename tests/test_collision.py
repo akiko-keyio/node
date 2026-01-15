@@ -1,5 +1,7 @@
 import hashlib
 
+import node
+
 
 def test_node_hash_equality(runtime_factory, monkeypatch):
     """Test that nodes with same hash are considered equal (no collision detection)."""
@@ -12,9 +14,9 @@ def test_node_hash_equality(runtime_factory, monkeypatch):
 
     monkeypatch.setattr(hashlib, "blake2b", dummy_blake2b)
 
-    rt = runtime_factory()
+    runtime_factory()
 
-    @rt.define()
+    @node.define()
     def ident(x):
         return x
 
