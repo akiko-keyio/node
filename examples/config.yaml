@@ -1,0 +1,203 @@
+region: "all"
+year: 2023
+time: "2023-01-01 00:00:00"
+
+times_presets:
+  month1:
+    _target_: trop.reference.time.times
+    start: "2023-01-01 00:00:00"
+    end: "2023-01-31 23:00:00"
+    freq: "12h"
+  month1_full:
+    _target_: trop.reference.time.times
+    start: "2023-01-01 00:00:00"
+    end: "2023-01-31 23:00:00"
+    freq: "1h"
+  month7:
+    _target_: trop.reference.time.times
+    start: "2023-07-01 00:00:00"
+    end: "2023-07-31 23:00:00"
+    freq: "12h"
+  month7_full:
+    _target_: trop.reference.time.times
+    start: "2023-07-01 00:00:00"
+    end: "2023-07-31 23:00:00"
+    freq: "1h"
+  light:
+    _target_: trop.reference.time.times
+    start: "2023-07-01 00:00:00"
+    end: "2023-07-02 23:00:00"
+    freq: "12h"
+  full:
+    _target_: trop.reference.time.times
+    start: "2023-01-01 00:00:00"
+    end: "2023-12-31 23:00:00"
+    freq: "12h"
+  dense:
+    _target_: trop.reference.time.times
+    start: "2023-01-01 00:00:00"
+    end: "2023-12-31 23:00:00"
+    freq: "1h"
+
+times: ${times_presets.full}
+
+ngl_station:
+  _target_: trop.reference.location.ngl_station
+  region: ${region}
+
+ngl_station_extend:
+  _target_: trop.reference.location.ngl_station_extend
+  stations: ${ngl_station}
+
+grid_us:
+  _target_: trop.reference.location.grid
+  spacing: 0.25
+  region: 'us'
+
+ztd_ngl_region:
+  _target_: trop.resource.ngl.ztd_ngl_region
+  year: ${year}
+  ngl_station: ${ngl_station}
+
+ztd_ngl_dataset_presets:
+  normal:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 0.0
+    sigma_quantile: 0.99
+    site_threshold: 0.8
+    time_threshold: 0.5
+  light:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 0.0
+    sigma_quantile: 0.999
+    site_threshold: 0.8
+    time_threshold: 0.5
+  disable:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 0.0
+    sigma_quantile: 1.0
+    site_threshold: 0.0
+    time_threshold: 0.0
+  add_sparse:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 30
+    sigma_quantile: 0.99
+    site_threshold: 0.8
+    time_threshold: 0.5
+  pro_sparse:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 40
+    sigma_quantile: 0.99
+    site_threshold: 0.8
+    time_threshold: 0.5
+  ultra_sparse:
+    _target_: trop.resource.ngl.ztd_ngl_dataset
+    ztd_ngl_region: ${ztd_ngl_region}
+    ngl_station: ${ngl_station}
+    min_distance: 50
+    sigma_quantile: 0.99
+    site_threshold: 0.8
+    time_threshold: 0.5
+
+ztd_ngl_dataset: ${ztd_ngl_dataset_presets.normal}
+
+nwm_file_presets:
+  era5:
+    _target_: trop.resource.ztd_nwm.nwm_file
+    source: "era5"
+    preset: "global_pl"
+    time: ${time}
+  eda:
+    _target_: trop.resource.ztd_nwm.nwm_file
+    source: "eda"
+    preset: "us_grid25"
+    time: ${time}
+  eda_global:
+    _target_: trop.resource.ztd_nwm.nwm_file
+    source: "eda"
+    preset: "global_grid25"
+    time: ${time}
+  lwda:
+    _target_: trop.resource.ztd_nwm.nwm_file
+    source: "eda"
+    preset: "lwda_global_grid25"
+    time: ${time}
+
+nwm_file: ${nwm_file_presets.eda_global}
+
+ztd_nwm:
+  _target_: trop.resource.ztd_nwm.ztd_nwm
+  nwm_file: ${nwm_file}
+  location: ${ngl_station}
+
+ztd_nwm_origin:
+  _target_: trop.resource.ztd_nwm.ztd_nwm_origin
+  nwm_file: ${nwm_file}
+  location: ${ngl_station}
+
+ztd_nwm_agg:
+  _target_: trop.resource.ztd_nwm.ztd_nwm_agg
+  ztd_nwm_origin: ${ztd_nwm_origin}
+  use_member: "all"
+
+ztd_nwms:
+  _target_: trop.resource.ztd_nwm.ztd_nwms
+  times: ${times}
+
+ztd_grid_3d:
+  _target_: trop.resource.ztd_nwm.ztd_grid
+  nwm_file: ${nwm_file}
+  location: ${grid_us}
+  resample_h:
+    - 0
+    - 6100
+    - 100
+
+ztd_grid_3ds:
+  _target_: trop.resource.ztd_nwm.ztd_grid_3ds
+  times: ${times}
+
+ztd_merge:
+  _target_: trop.resource.preprocess.ztd_merge
+  ztd_nwm: ${ztd_nwm_agg}
+  ztd_gnss_dataset: ${ztd_ngl_dataset}
+
+ztd_qc:
+  _target_: trop.resource.preprocess.ztd_qc
+  ztd_merge: ${ztd_merge}
+  threshold: 5
+  method: "sigma"
+
+ml:
+  _target_: trop.ml.ml.ml
+  ztd_merge: ${ztd_merge}
+  ztd_gnss_dataset: ${ztd_ngl_dataset}
+  test_size: 0.0
+  time_limit: 60
+  feature_cols:
+    - "lon"
+    - "lat"
+  target: "res"
+
+location_info:
+  _target_: trop.analysis.dataset.location_info
+  ztd_gnss_dataset: ${ztd_ngl_dataset}
+
+mlresult:
+   _target_: trop.analysis.dataset.mlresult
+   location_info: ${location_info}
+
+metvar:
+  _target_: trop.analysis.metvar.metvar
+  location: ${ngl_station}
+  times: ${times}
