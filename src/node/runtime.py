@@ -192,6 +192,9 @@ class Runtime:
         """Recursively resolve parameter values, replacing Nodes with their cached results."""
         from .core import Node
         if isinstance(v, Node):
+            # First check _results (for just-computed nodes), then cache
+            if v._hash in self._results:
+                return self._results[v._hash]
             hit, val = self.cache.get(v.fn.__name__, v._hash)
             return val if hit else None
         elif isinstance(v, dict):
