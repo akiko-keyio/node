@@ -202,8 +202,12 @@ class Runtime:
         elif isinstance(v, np.ndarray):
             if v.dtype == object:
                 # Recursively resolve Nodes inside the array
+                # Use explicit loop to prevent NumPy 2.x from unpacking iterables
                 res = [self._resolve(item) for item in v.flat]
-                return np.array(res, dtype=object).reshape(v.shape)
+                out = np.empty(len(res), dtype=object)
+                for i, r in enumerate(res):
+                    out[i] = r
+                return out.reshape(v.shape)
             return v
         return v
 
@@ -294,9 +298,11 @@ class Runtime:
              results = [resolve_val(item) for item in n._items.flat]
              
              # Reconstruct array structure
-             # Use np.empty to prevent numpy from inferring dimensions from the elements (if they are lists)
+             # Use explicit loop assignment to prevent NumPy 2.x from unpacking
+             # iterable objects (like DataFrames) during slice assignment
              val_flat = np.empty(len(results), dtype=object)
-             val_flat[:] = results
+             for i, res in enumerate(results):
+                 val_flat[i] = res
              val_array = val_flat.reshape(n._items.shape)
              
              # Return as DimensionedResult if has dimensions, else unwrap scalar
