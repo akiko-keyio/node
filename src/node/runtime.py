@@ -283,22 +283,14 @@ class Runtime:
                 sem.release()
             return val
 
-        # Helper to resolve a node recursively
-        def resolve_val(v):
-             from .core import Node
-             if isinstance(v, Node):
-                 if v._hash in self._results:
-                     return self._results[v._hash]
-                 # Should not happen if deps are correct
-                 return None
-             return v
-
         if n._items is not None:
              # VectorNode / Reduction Node:
              # The result is the aggregation of its items (which are dependencies).
+             from .core import Node
              from .dimension import DimensionedResult
-             
-             results = [resolve_val(item) for item in n._items.flat]
+
+             results = [self._results.get(item._hash) if isinstance(item, Node) else item
+                        for item in n._items.flat]
              
              # Reconstruct array structure
              # Use explicit loop assignment to prevent NumPy 2.x from unpacking
@@ -316,10 +308,15 @@ class Runtime:
              
              with self._lock:
                  self._results[n._hash] = val
-             
+
+             if n.cache:
+                 self.cache.put(n.fn.__name__, n._hash, val)
+                 if self._can_save:
+                     self.cache.save_script(n)
+
              dur = time.perf_counter() - start
              if self.on_node_end is not None:
-                 self.on_node_end(n, dur, True, False)
+                 self.on_node_end(n, dur, False, False)
              if sem is not None:
                  sem.release()
              return val
@@ -429,40 +426,48 @@ class Runtime:
         fut_map = {}
         with pool_cls(**pool_kwargs) as pool:
 
+            def _advance(node):
+                """Mark *node* as done and submit any newly-ready dependents."""
+                ts.done(node)
+                for ready in ts.get_ready():
+                    submit(ready)
+
             def submit(node):
+                # 1. Propagate failures
                 if any(d._hash in self._failed for d in node._exec_deps):
                     self._fail_node(node, time.perf_counter(), None)
-                    ts.done(node)
-                    for ready in ts.get_ready():
-                        submit(ready)
+                    _advance(node)
                     return
-                if getattr(node.fn, "_node_local", False):
+
+                # 2. Synchronous: local nodes, VectorNode assembly
+                #    VectorNodes only read from _results — never need a pool.
+                if getattr(node.fn, "_node_local", False) or node._items is not None:
                     self._eval_node(node)
-                    ts.done(node)
-                    for ready in ts.get_ready():
-                        submit(ready)
+                    _advance(node)
                     return
+
+                # 3. Thread pool: _eval_node handles everything in a worker thread
                 if self.executor == "thread":
                     sem = sems[node.fn]
                     fut_map[pool.submit(self._eval_node, node, sem)] = node
-                else:
-                    start = time.perf_counter()
-                    if self.on_node_start:
-                        self.on_node_start(node)
-                    hit, val = self.cache.get(node.fn.__name__, node._hash) if node.cache else (False, None)
-                    if hit:
-                        if self.on_node_end:
-                            self.on_node_end(
-                                node, time.perf_counter() - start, True, False
-                            )
-                        ts.done(node)
-                        return
-                    resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
-                    args, kwargs = self._bind_args(node, resolved_bound)
-                    sem = sems[node.fn]
-                    sem.acquire()
-                    fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
-                    fut_map[fut] = (node, start, sem, args, kwargs)
+                    return
+
+                # 4. Process pool: check cache to avoid subprocess overhead
+                if node.cache and self.cache.get(node.fn.__name__, node._hash)[0]:
+                    self._eval_node(node)
+                    _advance(node)
+                    return
+
+                # 5. Process pool: serialize function call to subprocess
+                start = time.perf_counter()
+                if self.on_node_start:
+                    self.on_node_start(node)
+                resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
+                args, kwargs = self._bind_args(node, resolved_bound)
+                sem = sems[node.fn]
+                sem.acquire()
+                fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
+                fut_map[fut] = (node, start, sem, args, kwargs)
 
             for n in ts.get_ready():
                 submit(n)
@@ -491,19 +496,14 @@ class Runtime:
                                 if self.on_node_end is not None:
                                     self.on_node_end(node, dur, False, True)
                                 sem.release()
-                                ts.done(node)
-                                for ready in ts.get_ready():
-                                    submit(ready)
+                                _advance(node)
                                 continue
                             else:
                                 sem.release()
                                 raise
-                        else:
-                            self._save_result(node, val, start)
+                        self._save_result(node, val, start)
                         sem.release()
-                    ts.done(node)
-                for n in ts.get_ready():
-                    submit(n)
+                    _advance(node)
 
         wall = time.perf_counter() - t0
         if proc_q is not None:
