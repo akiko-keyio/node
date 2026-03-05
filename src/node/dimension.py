@@ -206,6 +206,32 @@ class DimensionedResult(np.ndarray):
             return
         self.dims = getattr(obj, "dims", ())
         self.coords = getattr(obj, "coords", {})
+
+    def __reduce__(self):
+        """Support pickling while preserving dims and coords."""
+        func, args, state = super().__reduce__()
+        new_state = (state, getattr(self, "dims", ()), getattr(self, "coords", {}))
+        return func, args, new_state
+
+    def __setstate__(self, state):
+        """Restore array state along with dims and coords.
+
+        This handles both the new three-tuple state produced by our custom
+        ``__reduce__`` as well as any legacy state produced before this change.
+        """
+        if isinstance(state, tuple) and len(state) == 3:
+            ndarray_state, dims, coords = state
+            super().__setstate__(ndarray_state)
+            self.dims = dims
+            self.coords = coords
+            return
+
+        # Fallback for older pickles or unexpected state shapes
+        super().__setstate__(state)
+        if not hasattr(self, "dims"):
+            self.dims = ()
+        if not hasattr(self, "coords"):
+            self.coords = {}
     
     def transpose(self, *order: str) -> "DimensionedResult":
         """Transpose axes by dimension names.
@@ -234,5 +260,7 @@ class DimensionedResult(np.ndarray):
         return result
     
     def __repr__(self) -> str:
-        dims_str = ", ".join(f"{d}:{len(self.coords.get(d, []))}" for d in self.dims)
+        dims = getattr(self, "dims", ())
+        coords = getattr(self, "coords", {})
+        dims_str = ", ".join(f"{d}:{len(coords.get(d, []))}" for d in dims)
         return f"DimensionedResult({super().__repr__()}, dims=({dims_str}))"
