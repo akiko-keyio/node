@@ -10,6 +10,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 
 from graphlib import TopologicalSorter
 from collections.abc import Callable, Sequence
@@ -25,6 +26,7 @@ from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
 from .config import Config
 from .core import build_graph
 from .logger import logger
+from .parallel import parallel_context
 
 if TYPE_CHECKING:
     from .core import Node
@@ -57,6 +59,7 @@ def configure(
     reporter: Any = None,
     continue_on_error: bool = True,
     validate: bool = True,
+    limit_inner_parallelism: bool = True,
 ) -> "Runtime":
     """Configure the global Runtime. Can only be called once.
 
@@ -76,6 +79,9 @@ def configure(
         If True, continue execution when nodes fail.
     validate:
         If True, use pydantic to validate function arguments.
+    limit_inner_parallelism:
+        If True, automatically limit inner parallelism (e.g., sklearn n_jobs,
+        numpy BLAS threads) to prevent thread explosion. Defaults to True.
 
     Returns
     -------
@@ -95,6 +101,7 @@ def configure(
             reporter=reporter,
             continue_on_error=continue_on_error,
             validate=validate,
+            limit_inner_parallelism=limit_inner_parallelism,
         )
     return _runtime
 
@@ -141,6 +148,7 @@ class Runtime:
         reporter: Any = None,
         continue_on_error: bool = True,
         validate: bool = True,
+        limit_inner_parallelism: bool = True,
     ):
         # Config
         self.config = config if isinstance(config, Config) else Config(config)
@@ -157,6 +165,7 @@ class Runtime:
         self.executor = executor
         self.workers = workers
         self.continue_on_error = continue_on_error
+        self.limit_inner_parallelism = limit_inner_parallelism
         self.validate = validate
 
         # Internal state
@@ -244,8 +253,8 @@ class Runtime:
 
     def _save_result(self, node: Node, val: Any, start: float) -> None:
         """Save result to cache and trigger callbacks after successful execution."""
+        self._results[node._hash] = val
         with self._lock:
-            self._results[node._hash] = val
             self._exec_count += 1
         
         if node.cache:
@@ -275,8 +284,7 @@ class Runtime:
         hit, val = self.cache.get(n.fn.__name__, n._hash) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
-            with self._lock:
-                self._results[n._hash] = val
+            self._results[n._hash] = val
             if self.on_node_end is not None:
                 self.on_node_end(n, dur, True, False)
             if sem is not None:
@@ -314,8 +322,7 @@ class Runtime:
              else:
                  val = val_array.item()
              
-             with self._lock:
-                 self._results[n._hash] = val
+             self._results[n._hash] = val
              
              dur = time.perf_counter() - start
              if self.on_node_end is not None:
@@ -353,10 +360,15 @@ class Runtime:
         """Run the DAG rooted at ``root``."""
         if reporter is None:
             reporter = self.reporter
-        if reporter is None:
-            return self._run_internal(root, cache_root=cache_root)
-        with reporter.attach(self, root):
-            return self._run_internal(root, cache_root=cache_root)
+        
+        # Apply parallel context to limit inner parallelism
+        ctx = parallel_context(self.workers) if self.limit_inner_parallelism else nullcontext()
+        
+        with ctx:
+            if reporter is None:
+                return self._run_internal(root, cache_root=cache_root)
+            with reporter.attach(self, root):
+                return self._run_internal(root, cache_root=cache_root)
 
     def _run_internal(self, root: Node, *, cache_root: bool = True):
         self._exec_count = 0

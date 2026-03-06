@@ -72,18 +72,15 @@ class MemoryLRU(Cache):
         self._lock = threading.Lock()
 
     def get(self, fn_name: str, hash_value: int):
-        with self._lock:
-            if hash_value in self._lru:
-                return True, self._lru[hash_value]
+        if hash_value in self._lru:
+            return True, self._lru[hash_value]
         return False, None
 
     def put(self, fn_name: str, hash_value: int, value: Any):
-        with self._lock:
-            self._lru[hash_value] = value
+        self._lru[hash_value] = value
 
     def delete(self, fn_name: str, hash_value: int) -> None:
-        with self._lock:
-            self._lru.pop(hash_value, None)
+        self._lru.pop(hash_value, None)
 
 
 class DiskJoblib(Cache):
