@@ -64,7 +64,7 @@ class RichReporter:
 
     def __init__(
         self,
-        refresh_per_second: int = 1,
+        refresh_per_second: int = 20,
         show_script_line: bool = True,
         *,
         console: Console | None = None,
@@ -148,6 +148,8 @@ class _RichReporterCtx:
         self.tracks: dict[str, tuple[Progress, int, str]] = {}
         self.node_track_ids: dict[str, set[str]] = {}
         self._done_icon_char = self._pick_done_icon()
+        # Cache ETA per function; update at most once per elapsed second.
+        self._eta_cache: dict[str, tuple[int, float | None]] = {}
 
     def _pick_done_icon(self) -> str:
         """Return a completion icon supported by the active console encoding."""
@@ -238,7 +240,6 @@ class _RichReporterCtx:
 
         self.live = Live(
             self._render(),
-            auto_refresh=False,
             refresh_per_second=self.cfg.refresh_per_second,
             transient=not IN_JUPYTER,
             console=self.cfg.console,
@@ -306,10 +307,11 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _loop(self) -> None:
+        sleep = 1.0 / self.cfg.refresh_per_second
         while not self._stop.is_set():
-            if self._drain():
-                self.live.update(self._render())
-            time.sleep(0.05)
+            self._drain()
+            self.live.update(self._render())
+            time.sleep(sleep)
         self._drain()
 
     def track(
@@ -324,8 +326,7 @@ class _RichReporterCtx:
             self.q.put(("track_update", tid, count))
         self.q.put(("track_end", tid))
 
-    def _drain(self) -> bool:
-        should_refresh = False
+    def _drain(self) -> None:
         if self.proc_queue is not None:
             while True:
                 try:
@@ -350,7 +351,6 @@ class _RichReporterCtx:
                     
             elif typ == "end":
                 k, dur, cached, failed = rest
-                should_refresh = True
                 if k in self.running_nodes:
                     self.running_nodes.remove(k)
                 
@@ -369,8 +369,6 @@ class _RichReporterCtx:
                     else:
                         stats.completed += 1
                         stats.last_end = time.perf_counter()
-            elif typ == "flow":
-                should_refresh = True
 
             elif typ == "track_start":
                 tid, node_key, desc, total = rest
@@ -395,7 +393,6 @@ class _RichReporterCtx:
                             ids.discard(tid)
                             if not ids:
                                 self.node_track_ids.pop(node_key, None)
-        return should_refresh
 
 
     # --------------------------------------------------------------
@@ -446,7 +443,13 @@ class _RichReporterCtx:
                 # ⠋ 2/7 Task3 Name [1.9 s | ETA 5.7 s]
                 icon = spinner
                 count_text = f"{stats.completed}/{stats.total}"
-                eta = self._estimate_remaining(duration, stats.completed, stats.total)
+                sec_key = int(duration)
+                cached = self._eta_cache.get(fn_name)
+                if cached is not None and cached[0] == sec_key:
+                    eta = cached[1]
+                else:
+                    eta = self._estimate_remaining(duration, stats.completed, stats.total)
+                    self._eta_cache[fn_name] = (sec_key, eta)
                 if eta is not None:
                     dur_str = f"[{self._format_dur(duration)} | ETA {self._format_eta(eta)}]"
                 else:
