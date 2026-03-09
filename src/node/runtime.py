@@ -332,10 +332,14 @@ class Runtime:
                  val = val_array.item()
              
              self._results[n._hash] = val
+             if n.cache:
+                 self.cache.put(n.fn.__name__, n._hash, val)
+                 if self._can_save:
+                     self.cache.save_script(n)
              
              dur = time.perf_counter() - start
              if self.on_node_end is not None:
-                 self.on_node_end(n, dur, True, False)
+                 self.on_node_end(n, dur, False, False)
              if sem is not None:
                  sem.release()
              return val
