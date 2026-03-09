@@ -64,7 +64,7 @@ class RichReporter:
 
     def __init__(
         self,
-        refresh_per_second: int = 20,
+        refresh_per_second: int = 1,
         show_script_line: bool = True,
         *,
         console: Console | None = None,
@@ -147,6 +147,16 @@ class _RichReporterCtx:
         # Restore tracking attributes for track() support
         self.tracks: dict[str, tuple[Progress, int, str]] = {}
         self.node_track_ids: dict[str, set[str]] = {}
+        self._done_icon_char = self._pick_done_icon()
+
+    def _pick_done_icon(self) -> str:
+        """Return a completion icon supported by the active console encoding."""
+        encoding = getattr(self.cfg.console.file, "encoding", None) or "utf-8"
+        try:
+            "•".encode(encoding)
+        except Exception:
+            return "*"
+        return "•"
 
     def _make_progress(self) -> Progress:
         """Return a progress instance configured for single-line display."""
@@ -178,6 +188,15 @@ class _RichReporterCtx:
             s = int(seconds % 60)
             return f"{m}m {s}s" if s else f"{m}m"
         return f"{seconds:.1f} s"
+
+    @staticmethod
+    def _format_eta(seconds: float) -> str:
+        """Return ETA with only the most significant unit."""
+        if seconds >= 3600:
+            return f"{int(seconds // 3600)}h"
+        if seconds >= 60:
+            return f"{int(seconds // 60)}m"
+        return f"{int(seconds)}s"
 
     @staticmethod
     def _estimate_remaining(
@@ -219,6 +238,7 @@ class _RichReporterCtx:
 
         self.live = Live(
             self._render(),
+            auto_refresh=False,
             refresh_per_second=self.cfg.refresh_per_second,
             transient=not IN_JUPYTER,
             console=self.cfg.console,
@@ -286,11 +306,10 @@ class _RichReporterCtx:
 
     # --------------------------------------------------------------
     def _loop(self) -> None:
-        sleep = 1.0 / self.cfg.refresh_per_second
         while not self._stop.is_set():
-            self._drain()
-            self.live.update(self._render())
-            time.sleep(sleep)
+            if self._drain():
+                self.live.update(self._render())
+            time.sleep(0.05)
         self._drain()
 
     def track(
@@ -305,7 +324,8 @@ class _RichReporterCtx:
             self.q.put(("track_update", tid, count))
         self.q.put(("track_end", tid))
 
-    def _drain(self) -> None:
+    def _drain(self) -> bool:
+        should_refresh = False
         if self.proc_queue is not None:
             while True:
                 try:
@@ -330,6 +350,7 @@ class _RichReporterCtx:
                     
             elif typ == "end":
                 k, dur, cached, failed = rest
+                should_refresh = True
                 if k in self.running_nodes:
                     self.running_nodes.remove(k)
                 
@@ -348,6 +369,8 @@ class _RichReporterCtx:
                     else:
                         stats.completed += 1
                         stats.last_end = time.perf_counter()
+            elif typ == "flow":
+                should_refresh = True
 
             elif typ == "track_start":
                 tid, node_key, desc, total = rest
@@ -372,6 +395,7 @@ class _RichReporterCtx:
                             ids.discard(tid)
                             if not ids:
                                 self.node_track_ids.pop(node_key, None)
+        return should_refresh
 
 
     # --------------------------------------------------------------
@@ -402,7 +426,7 @@ class _RichReporterCtx:
             if is_done:
                 # Done: Blue style
                 # • 12 Task1 Name [12.2 s]
-                icon = Text("•", style="blue")
+                icon = Text(self._done_icon_char, style="blue")
                 count_text = f"{stats.total}"
                 dur_str = f"[{self._format_dur(duration)}]"
                 
@@ -424,7 +448,7 @@ class _RichReporterCtx:
                 count_text = f"{stats.completed}/{stats.total}"
                 eta = self._estimate_remaining(duration, stats.completed, stats.total)
                 if eta is not None:
-                    dur_str = f"[{self._format_dur(duration)} | ETA {self._format_dur(eta)}]"
+                    dur_str = f"[{self._format_dur(duration)} | ETA {self._format_eta(eta)}]"
                 else:
                     dur_str = f"[{self._format_dur(duration)}]"
                 

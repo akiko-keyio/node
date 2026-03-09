@@ -26,6 +26,13 @@ def test_format_duration():
     assert _RichReporterCtx._format_dur(3661) == "1h 1m 1s"
 
 
+def test_format_eta_keeps_only_most_significant_unit():
+    """ETA should only show the most significant unit."""
+    assert _RichReporterCtx._format_eta(8 * 3600 + 12 * 60 + 39) == "8h"
+    assert _RichReporterCtx._format_eta(6 * 60 + 1) == "6m"
+    assert _RichReporterCtx._format_eta(9.8) == "9s"
+
+
 def test_estimate_remaining_only_after_one_minute():
     """ETA should be hidden for short elapsed times."""
     assert _RichReporterCtx._estimate_remaining(59.9, 3, 10) is None
