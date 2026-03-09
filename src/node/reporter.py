@@ -171,6 +171,23 @@ class _RichReporterCtx:
             return f"{m}m {s}s" if s else f"{m}m"
         return f"{seconds:.1f} s"
 
+    @staticmethod
+    def _estimate_remaining(
+        elapsed: float, completed: int, total: int, *, threshold: float = 60.0
+    ) -> float | None:
+        """Estimate remaining seconds for an in-progress task.
+
+        ETA is only shown after ``threshold`` seconds to avoid noisy estimates
+        during short runs.
+        """
+        if elapsed <= threshold or completed <= 0 or total <= completed:
+            return None
+        rate = completed / elapsed
+        if rate <= 0:
+            return None
+        remaining = total - completed
+        return remaining / rate
+
     # --------------------------------------------------------------
     def __enter__(self):
         self.orig_start = self.runtime.on_node_start
@@ -392,10 +409,14 @@ class _RichReporterCtx:
                 ]
             else:
                 # Running: Orange style
-                # ⠋ 2/7 Task3 Name [1.9 s]
+                # ⠋ 2/7 Task3 Name [1.9 s | ETA 5.7 s]
                 icon = spinner
                 count_text = f"{stats.completed}/{stats.total}"
-                dur_str = f"[{self._format_dur(duration)}]"
+                eta = self._estimate_remaining(duration, stats.completed, stats.total)
+                if eta is not None:
+                    dur_str = f"[{self._format_dur(duration)} | ETA {self._format_dur(eta)}]"
+                else:
+                    dur_str = f"[{self._format_dur(duration)}]"
                 
                 # Function name: default color (no style), not bold
                 # Others: orange1

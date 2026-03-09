@@ -26,6 +26,18 @@ def test_format_duration():
     assert _RichReporterCtx._format_dur(3661) == "1h 1m 1s"
 
 
+def test_estimate_remaining_only_after_one_minute():
+    """ETA should be hidden for short elapsed times."""
+    assert _RichReporterCtx._estimate_remaining(59.9, 3, 10) is None
+
+
+def test_estimate_remaining_returns_seconds():
+    """ETA should be computed once elapsed exceeds threshold."""
+    eta = _RichReporterCtx._estimate_remaining(120, 3, 9)
+    assert eta is not None
+    assert eta == 240
+
+
 def test_start_uses_syntax():
     """Test that _start creates proper label using Syntax."""
     ctx = _make_ctx()
