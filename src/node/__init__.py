@@ -64,6 +64,12 @@ def run(root: Node, *, reporter=None, cache_root: bool = True):
     return get_runtime().run(root, reporter=reporter, cache_root=cache_root)
 
 
+def instantiate(name: str) -> Node:
+    """Instantiate a node from current runtime config by section name."""
+    runtime = get_runtime()
+    return runtime.config.instantiate(name, runtime=runtime)
+
+
 class _CfgProxy:
     """Proxy object for convenient access to runtime configuration.
     
@@ -102,6 +108,7 @@ __all__ = [
     "configure",
     "define",
     "run",
+    "instantiate",
     "dimension",
     "reset",
     # Exceptions

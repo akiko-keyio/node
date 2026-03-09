@@ -119,21 +119,68 @@ class Config:
             return OmegaConf.select(self._conf, key)
         return val
 
-    def _build_node(self, name: str, runtime: Any) -> "Node":
+    def instantiate(self, name: str, *, runtime: Any | None = None) -> "Node":
+        """Instantiate a node from config section ``name``.
+
+        Parameters
+        ----------
+        name:
+            Name of the config section to instantiate.
+        runtime:
+            Runtime used to resolve nested ``${...}`` references to nodes.
+            If omitted, use the global runtime.
+        """
+        from .exceptions import ConfigurationError
+
+        if runtime is None:
+            from .runtime import get_runtime
+
+            runtime = get_runtime()
+
         if self._cache_nodes and name in self._nodes:
-            return self._nodes[name]
-        cfg = self._conf[name]
+            return cast("Node", self._nodes[name])
+
+        if name not in self._conf:
+            raise ConfigurationError(f"Config section '{name}' not found.")
+
+        raw_cfg = self._conf[name]
+        if not OmegaConf.is_dict(raw_cfg):
+            raise ConfigurationError(
+                f"Config section '{name}' must be a mapping, got {type(raw_cfg).__name__}."
+            )
+
+        cfg = self._resolve_with_presets(cast(DictConfig, raw_cfg))
         target = cfg.get("_target_", name)
-        fn = self._locate(str(target))
+        if not isinstance(target, str) or not target.strip():
+            raise ConfigurationError(
+                f"Config section '{name}' has invalid '_target_' value: {target!r}."
+            )
+
+        try:
+            fn = self._locate(target)
+        except Exception as e:
+            raise ConfigurationError(
+                f"Failed to locate target '{target}' for section '{name}': {e}"
+            ) from e
+
+        cfg_dict = OmegaConf.to_container(cfg, resolve=False)
+        if not isinstance(cfg_dict, dict):
+            raise ConfigurationError(
+                f"Config section '{name}' must resolve to a mapping."
+            )
+
         params = {
             k: self._resolve_value(v, runtime)
-            for k, v in OmegaConf.to_container(cfg, resolve=False).items()
-            if k != "_target_"
+            for k, v in cfg_dict.items()
+            if k not in {"_target_", "_use_", "_presets_"}
         }
         node = fn(**params)
         if self._cache_nodes:
             self._nodes[name] = node
         return node
+
+    def _build_node(self, name: str, runtime: Any) -> "Node":
+        return self.instantiate(name, runtime=runtime)
 
     def defaults(self, fn_name: str, *, runtime: Any | None = None) -> dict[str, Any]:
         node_cfg = self._conf.get(fn_name)
