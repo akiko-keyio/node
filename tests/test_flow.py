@@ -629,3 +629,66 @@ def test_cached_dependency_skips_upstream(runtime_factory):
     assert c_node._hash not in cache.calls
     assert b_node._hash in cache.calls
 
+
+def test_run_releases_intermediate_results(runtime_factory):
+    rt = runtime_factory(cache=MemoryLRU(), workers=1)
+
+    @node.define(cache=False)
+    def c(x):
+        return x + 1
+
+    @node.define(cache=False)
+    def b(x):
+        return x * 2
+
+    @node.define(cache=False)
+    def a(x):
+        return x - 3
+
+    root = a(b(c(10)))
+    assert rt.run(root) == 19
+    assert set(rt._results.keys()) == {root._hash}
+
+
+def test_dimension_chain_limits_in_run_result_footprint(runtime_factory):
+    rt = runtime_factory(cache=MemoryLRU(), workers=1)
+    n = 128
+
+    class TrackingResults(dict):
+        def __init__(self):
+            super().__init__()
+            self.max_len = 0
+
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            current = len(self)
+            if current > self.max_len:
+                self.max_len = current
+
+    rt._results = TrackingResults()
+
+    @node.dimension()
+    def axis():
+        return list(range(n))
+
+    @node.define(cache=False)
+    def c(x: int) -> int:
+        return x + 1
+
+    @node.define(cache=False)
+    def b(x: int) -> int:
+        return x * 2
+
+    @node.define(cache=False)
+    def a(x: int) -> int:
+        return x - 3
+
+    root = a(x=b(x=c(x=axis())))
+    out = rt.run(root)
+
+    assert len(out) == n
+    # In a three-stage vector chain, peak retained entries should stay close to
+    # one stage worth of scalar items rather than all stages accumulated.
+    assert rt._results.max_len <= n + 8
+    assert set(rt._results.keys()) == {root._hash}
+

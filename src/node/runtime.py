@@ -421,6 +421,28 @@ class Runtime:
         else:
             order, edges = _graph
 
+        # Track how many downstream nodes still need each node's in-run result.
+        # Once a node has no remaining consumers, its value can be released
+        # from ``_results`` to reduce peak memory usage.
+        dep_refcounts: dict[int, int] = {}
+        for deps in edges.values():
+            for dep in deps:
+                dep_refcounts[dep._hash] = dep_refcounts.get(dep._hash, 0) + 1
+
+        def release_consumed_deps(node: Node) -> None:
+            for dep in node._exec_deps:
+                dep_hash = dep._hash
+                remaining = dep_refcounts.get(dep_hash)
+                if remaining is None:
+                    continue
+                remaining -= 1
+                if remaining <= 0:
+                    dep_refcounts.pop(dep_hash, None)
+                    if dep is not root:
+                        self._results.pop(dep_hash, None)
+                else:
+                    dep_refcounts[dep_hash] = remaining
+
         max_node_workers = 1
         for node in order:
             workers = getattr(node.fn, "_node_workers", 1)
@@ -432,6 +454,7 @@ class Runtime:
         if min(self.workers, max_node_workers) <= 1:
             for node in order:
                 self._eval_node(node)
+                release_consumed_deps(node)
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
@@ -486,6 +509,7 @@ class Runtime:
             def submit(node):
                 if any(d._hash in self._failed for d in node._exec_deps):
                     self._fail_node(node, time.perf_counter(), None)
+                    release_consumed_deps(node)
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
@@ -493,6 +517,7 @@ class Runtime:
                     return
                 if getattr(node.fn, "_node_local", False):
                     self._eval_node(node)
+                    release_consumed_deps(node)
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
@@ -512,6 +537,7 @@ class Runtime:
                             self.on_node_end(
                                 node, time.perf_counter() - start, True, False
                             )
+                        release_consumed_deps(node)
                         ts.done(node)
                         for ready in ts.get_ready():
                             submit(ready)
@@ -559,6 +585,7 @@ class Runtime:
                                 if self.on_node_end is not None:
                                     self.on_node_end(node, dur, False, True)
                                 sem.release()
+                                release_consumed_deps(node)
                                 ts.done(node)
                                 for ready in ts.get_ready():
                                     submit(ready)
@@ -569,6 +596,7 @@ class Runtime:
                         else:
                             self._save_result(node, val, start)
                         sem.release()
+                    release_consumed_deps(node)
                     ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
