@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import os
 import pickle
 import threading
 import time
-import warnings
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 
@@ -19,7 +17,6 @@ from weakref import WeakValueDictionary
 
 from loky import ProcessPoolExecutor
 from omegaconf import OmegaConf
-from pydantic import validate_call
 import numpy as np
 
 from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
@@ -309,22 +306,16 @@ class Runtime:
         if n._exec_deps:
             self._ensure_deps_ready(n)
 
-        # Helper to resolve a node recursively
-        def resolve_val(v):
-             from .core import Node
-             if isinstance(v, Node):
-                 if v._hash in self._results:
-                     return self._results[v._hash]
-                 # Should not happen if deps are correct
-                 return None
-             return v
-
         if n._items is not None:
              # VectorNode / Reduction Node:
              # The result is the aggregation of its items (which are dependencies).
              from .dimension import DimensionedResult
              
-             results = [resolve_val(item) for item in n._items.flat]
+             # Items are dependency nodes already materialized by _ensure_deps_ready.
+             results = [
+                 self._results.get(item._hash) if hasattr(item, "_hash") else item
+                 for item in n._items.flat
+             ]
              
              # Reconstruct array structure
              # Use explicit loop assignment to prevent NumPy 2.x from unpacking
@@ -449,9 +440,6 @@ class Runtime:
             result = self._results.get(root._hash)
             return result
 
-        orig_start = self.on_node_start
-        orig_end = self.on_node_end
-
         pool_cls = (
             ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
         )
@@ -564,8 +552,6 @@ class Runtime:
         if proc_q is not None:
             from .reporter import _set_process_queue
             _set_process_queue(None)
-        self.on_node_start = orig_start
-        self.on_node_end = orig_end
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count, len(self._failed))
         

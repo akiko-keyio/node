@@ -31,7 +31,7 @@ def _get_layout_from_sig(fn: Callable, known_dims: set[str]) -> tuple[list[str],
             dim_args.append(name)
         else:
             other_args.append(name)
-            
+
     return dim_args, other_args
 
 
@@ -128,22 +128,23 @@ def broadcast(
     bcast_dim_to_idx = {d: i for i, d in enumerate(broadcast_dims)}
     vector_dim_positions = {
         k: [bcast_dim_to_idx.get(d) for d in v.dims]
+        for k, v in vector_inputs.items()
+    }
+    base_inputs = {
+        k: v
         for k, v in inputs.items()
-        if isinstance(v, Node) and v.dims
+        if not (isinstance(v, Node) and v.dims)
     }
     
     for indices in itertools.product(*ranges):
-        scalar_inputs = {}
-        for k, v in inputs.items():
-            if isinstance(v, Node) and v.dims:
-                # determine slice
-                slice_key = tuple(
-                    indices[idx_pos] if idx_pos is not None else slice(None)
-                    for idx_pos in vector_dim_positions[k]
-                )
-                scalar_inputs[k] = v._items[slice_key]
-            else:
-                scalar_inputs[k] = v
+        scalar_inputs = dict(base_inputs)
+        for k, v in vector_inputs.items():
+            # determine slice
+            slice_key = tuple(
+                indices[idx_pos] if idx_pos is not None else slice(None)
+                for idx_pos in vector_dim_positions[k]
+            )
+            scalar_inputs[k] = v._items[slice_key]
         
         # Inject Current Coordinates (Implicit Args)
         for d in dims_to_inject:
