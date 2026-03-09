@@ -45,7 +45,9 @@ def test_corrupt_cached_hit_recovers_with_dependencies(tmp_path, runtime_factory
 
     root = twice(base(3))
     # 仅写入一个损坏的 root 缓存文件：contains=True，但 get 会失败并触发删除。
-    disk._path(root.fn.__name__, root._hash).write_bytes(b"corrupt")
+    corrupt_path = disk._path(root.fn.__name__, root._hash)
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_bytes(b"corrupt")
 
     assert rt.run(root) == 8
     assert calls == ["base", "twice"]

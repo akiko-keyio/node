@@ -202,14 +202,15 @@ class TestCacheConcurrency:
         """Verify cache prevents re-execution of the same computation."""
         cache = ChainCache([MemoryLRU(), DiskJoblib(root=tmp_path / "cache")])
         node.configure(workers=4, cache=cache)
-        
-        call_marker = tmp_path / "calls.txt"
-        call_marker.write_text("")
+
+        call_count = 0
+        count_lock = threading.Lock()
         
         @node.define()
         def file_tracked_task(x):
-            with open(call_marker, "a") as f:
-                f.write(f"{x}\n")
+            nonlocal call_count
+            with count_lock:
+                call_count += 1
             return x * x
         
         @node.dimension()
@@ -217,10 +218,10 @@ class TestCacheConcurrency:
             return [1, 2, 3, 4, 5]
         
         result1 = file_tracked_task(x=cache_items())()
-        calls_after_first = len(call_marker.read_text().strip().split("\n"))
+        calls_after_first = call_count
         
         result2 = file_tracked_task(x=cache_items())()
-        calls_after_second = len(call_marker.read_text().strip().split("\n"))
+        calls_after_second = call_count
         
         assert list(result1) == list(result2)
         assert calls_after_first == 5

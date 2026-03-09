@@ -280,17 +280,13 @@ class Runtime:
             self._eval_node(dep)
 
     def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
-        if sem is not None:
-            sem.acquire()
-        
         if n._hash in self._results:
-            if sem is not None:
-                sem.release()
             return self._results[n._hash]
 
         start = time.perf_counter()
         if any(d._hash in self._failed for d in n._exec_deps):
-            self._fail_node(n, start, sem)
+            # Semaphore is acquired only for real computation after cache miss.
+            self._fail_node(n, start, None)
             return None
         if self.on_node_start is not None:
             self.on_node_start(n)
@@ -300,75 +296,74 @@ class Runtime:
             self._results[n._hash] = val
             if self.on_node_end is not None:
                 self.on_node_end(n, dur, True, False)
-            if sem is not None:
-                sem.release()
             return val
 
         if n._exec_deps:
             self._ensure_deps_ready(n)
 
-        if n._items is not None:
-             # VectorNode / Reduction Node:
-             # The result is the aggregation of its items (which are dependencies).
-             from .dimension import DimensionedResult
-             
-             # Items are dependency nodes already materialized by _ensure_deps_ready.
-             results = [
-                 self._results.get(item._hash) if hasattr(item, "_hash") else item
-                 for item in n._items.flat
-             ]
-             
-             # Reconstruct array structure
-             # Use explicit loop assignment to prevent NumPy 2.x from unpacking
-             # iterable objects (like DataFrames) during slice assignment
-             val_flat = np.empty(len(results), dtype=object)
-             for i, res in enumerate(results):
-                 val_flat[i] = res
-             val_array = val_flat.reshape(n._items.shape)
-             
-             # Return as DimensionedResult if has dimensions, else unwrap scalar
-             if n.dims:
-                 val = DimensionedResult(val_array, dims=n.dims, coords=n.coords)
-             else:
-                 val = val_array.item()
-             
-             self._results[n._hash] = val
-             if n.cache:
-                 self.cache.put(n.fn.__name__, n._hash, val)
-                 if self._can_save:
-                     self.cache.save_script(n)
-             
-             dur = time.perf_counter() - start
-             if self.on_node_end is not None:
-                 self.on_node_end(n, dur, False, False)
-             if sem is not None:
-                 sem.release()
-             return val
+        acquired = False
+        if sem is not None:
+            sem.acquire()
+            acquired = True
 
-        # Resolve arguments from inputs and call function
-        resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
-        args, kwargs = self._bind_args(n, resolved_args)
         try:
-            val = n.fn(*args, **kwargs)
-        except Exception as e:
-            logger.error("node {} failed for {}", f"{n.fn.__name__}_{n._hash:x}", e, exc_info=True)
-            if self.continue_on_error:
-                self._failed.add(n._hash)
+            if n._items is not None:
+                # VectorNode / Reduction Node:
+                # The result is the aggregation of its items (which are dependencies).
+                from .dimension import DimensionedResult
+
+                # Items are dependency nodes already materialized by _ensure_deps_ready.
+                results = [
+                    self._results.get(item._hash) if hasattr(item, "_hash") else item
+                    for item in n._items.flat
+                ]
+
+                # Reconstruct array structure
+                # Use explicit loop assignment to prevent NumPy 2.x from unpacking
+                # iterable objects (like DataFrames) during slice assignment
+                val_flat = np.empty(len(results), dtype=object)
+                for i, res in enumerate(results):
+                    val_flat[i] = res
+                val_array = val_flat.reshape(n._items.shape)
+
+                # Return as DimensionedResult if has dimensions, else unwrap scalar
+                if n.dims:
+                    val = DimensionedResult(val_array, dims=n.dims, coords=n.coords)
+                else:
+                    val = val_array.item()
+
+                self._results[n._hash] = val
+                if n.cache:
+                    self.cache.put(n.fn.__name__, n._hash, val)
+                    if self._can_save:
+                        self.cache.save_script(n)
+
                 dur = time.perf_counter() - start
                 if self.on_node_end is not None:
-                    self.on_node_end(n, dur, False, True)
-                if sem is not None:
-                    sem.release()
-                return None
+                    self.on_node_end(n, dur, False, False)
+                return val
+
+            # Resolve arguments from inputs and call function
+            resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
+            args, kwargs = self._bind_args(n, resolved_args)
+            try:
+                val = n.fn(*args, **kwargs)
+            except Exception as e:
+                logger.error("node {} failed for {}", f"{n.fn.__name__}_{n._hash:x}", e, exc_info=True)
+                if self.continue_on_error:
+                    self._failed.add(n._hash)
+                    dur = time.perf_counter() - start
+                    if self.on_node_end is not None:
+                        self.on_node_end(n, dur, False, True)
+                    return None
+                else:
+                    raise
             else:
-                if sem is not None:
-                    sem.release()
-                raise
-        else:
-            self._save_result(n, val, start)
-        if sem is not None:
-            sem.release()
-        return val
+                self._save_result(n, val, start)
+            return val
+        finally:
+            if acquired:
+                sem.release()
 
     def run(self, root: Node, *, reporter=None, cache_root: bool = True):
         """Run the DAG rooted at ``root``."""
