@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
+from collections import deque
 
 from graphlib import TopologicalSorter
 from collections.abc import Callable, Sequence
@@ -469,7 +470,23 @@ class Runtime:
                 sems[node.fn] = threading.Semaphore(workers)
 
         fut_map = {}
+        pending_nodes: deque[Node] = deque()
+        pending_hashes: set[str] = set()
         with pool_cls(**pool_kwargs) as pool:
+
+            def enqueue_pending(node: Node) -> None:
+                if node._hash not in pending_hashes:
+                    pending_nodes.append(node)
+                    pending_hashes.add(node._hash)
+
+            def drain_pending() -> None:
+                if self.executor != "process" or not pending_nodes:
+                    return
+                total = len(pending_nodes)
+                for _ in range(total):
+                    pending = pending_nodes.popleft()
+                    pending_hashes.discard(pending._hash)
+                    submit(pending)
 
             def submit(node):
                 if any(d._hash in self._failed for d in node._exec_deps):
@@ -477,12 +494,14 @@ class Runtime:
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
+                    drain_pending()
                     return
                 if getattr(node.fn, "_node_local", False):
                     self._eval_node(node)
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
+                    drain_pending()
                     return
                 if self.executor == "thread":
                     sem = sems[node.fn]
@@ -507,14 +526,21 @@ class Runtime:
                     resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
                     args, kwargs = self._bind_args(node, resolved_bound)
                     sem = sems[node.fn]
-                    sem.acquire()
+                    if not sem.acquire(blocking=False):
+                        enqueue_pending(node)
+                        return
                     fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
                     fut_map[fut] = (node, start, sem, args, kwargs)
 
             for n in ts.get_ready():
                 submit(n)
+            drain_pending()
 
-            while fut_map:
+            while fut_map or pending_nodes:
+                if not fut_map:
+                    drain_pending()
+                    if not fut_map:
+                        break
                 done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
                 for fut in done:
                     info = fut_map.pop(fut)
@@ -551,6 +577,7 @@ class Runtime:
                     ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
+                drain_pending()
 
         wall = time.perf_counter() - t0
         if proc_q is not None:
