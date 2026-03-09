@@ -266,6 +266,19 @@ class Runtime:
         if self.on_node_end is not None:
             self.on_node_end(node, dur, False, False)
 
+    def _ensure_deps_ready(self, node: Node) -> None:
+        """Ensure dependencies are materialized when a pruned cache hit turns miss."""
+        for dep in node._exec_deps:
+            if dep._hash in self._results:
+                continue
+            if dep.cache:
+                dep_hit, dep_val = self.cache.get(dep.fn.__name__, dep._hash)
+                if dep_hit:
+                    self._results[dep._hash] = dep_val
+                    continue
+            # Fallback: evaluate dependency recursively (self-heal for corrupt cache files).
+            self._eval_node(dep)
+
     def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
         if sem is not None:
             sem.acquire()
@@ -290,6 +303,9 @@ class Runtime:
             if sem is not None:
                 sem.release()
             return val
+
+        if n._exec_deps:
+            self._ensure_deps_ready(n)
 
         # Helper to resolve a node recursively
         def resolve_val(v):
@@ -469,6 +485,8 @@ class Runtime:
                             )
                         ts.done(node)
                         return
+                    if node._exec_deps:
+                        self._ensure_deps_ready(node)
                     resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
                     args, kwargs = self._bind_args(node, resolved_bound)
                     sem = sems[node.fn]
