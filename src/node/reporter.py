@@ -92,7 +92,7 @@ class RichReporter:
         else:
             self.console = console
 
-    def attach(self, runtime: "Runtime", root: Node):
+    def attach(self, runtime: "Runtime", root: Node, *, order: list[Node] | None = None):
         """Return a context manager bound to ``engine`` and ``root``.
 
         If the console already has an active live display, a no-op context
@@ -100,7 +100,7 @@ class RichReporter:
         """
         if getattr(self.console, "_live", None) is not None:
             return nullcontext()
-        return _RichReporterCtx(self, runtime, root)
+        return _RichReporterCtx(self, runtime, root, order=order)
 
 
 class _TaskStats:
@@ -115,10 +115,18 @@ class _TaskStats:
 class _RichReporterCtx:
     """Context manager handling ``rich`` updates for a run."""
 
-    def __init__(self, reporter: RichReporter, runtime: "Runtime", root: Node):
+    def __init__(
+        self,
+        reporter: RichReporter,
+        runtime: "Runtime",
+        root: Node,
+        *,
+        order: list[Node] | None = None,
+    ):
         self.cfg = reporter
         self.runtime = runtime
         self.root = root
+        self.order = order
         self.q: SimpleQueue = SimpleQueue()
         
         # Stats by function name
@@ -198,7 +206,9 @@ class _RichReporterCtx:
         self.runtime.on_flow_end = self._flow
         
         # Pre-calculate totals by function name
-        order, _ = build_graph(self.root, self.runtime.cache)
+        order = self.order
+        if order is None:
+            order, _ = build_graph(self.root, self.runtime.cache)
         for node in order:
             fn_name = node.fn.__name__
             self.node_to_fn_name[node._hash] = fn_name

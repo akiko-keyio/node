@@ -237,7 +237,9 @@ class Runtime:
 
     def _bind_args(self, node: Node, resolved_args: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
         """Bind resolved arguments to function signature."""
-        sig = getattr(node.fn, "_node_sig", inspect.signature(node.fn))
+        sig = getattr(node.fn, "_node_sig", None)
+        if sig is None:
+            sig = inspect.signature(node.fn)
         args = []
         kwargs = {}
         for name, param in sig.parameters.items():
@@ -383,10 +385,27 @@ class Runtime:
         with ctx:
             if reporter is None:
                 return self._run_internal(root, cache_root=cache_root)
-            with reporter.attach(self, root):
-                return self._run_internal(root, cache_root=cache_root)
+            graph = build_graph(root, self.cache)
+            try:
+                attach_sig = inspect.signature(reporter.attach)
+                supports_order = "order" in attach_sig.parameters
+            except (TypeError, ValueError):
+                supports_order = False
+            attach_ctx = (
+                reporter.attach(self, root, order=graph[0])
+                if supports_order
+                else reporter.attach(self, root)
+            )
+            with attach_ctx:
+                return self._run_internal(root, cache_root=cache_root, _graph=graph)
 
-    def _run_internal(self, root: Node, *, cache_root: bool = True):
+    def _run_internal(
+        self,
+        root: Node,
+        *,
+        cache_root: bool = True,
+        _graph: tuple[list[Node], dict[Node, list[Node]]] | None = None,
+    ):
         self._exec_count = 0
         self._failed.clear()
         self._results.clear()
@@ -406,7 +425,10 @@ class Runtime:
                 self.on_flow_end(root, time.perf_counter() - t0, 0, 0)
             return val
 
-        order, edges = build_graph(root, self.cache)
+        if _graph is None:
+            order, edges = build_graph(root, self.cache)
+        else:
+            order, edges = _graph
 
         max_node_workers = 1
         for node in order:
@@ -479,11 +501,14 @@ class Runtime:
                         self.on_node_start(node)
                     hit, val = self.cache.get(node.fn.__name__, node._hash) if node.cache else (False, None)
                     if hit:
+                        self._results[node._hash] = val
                         if self.on_node_end:
                             self.on_node_end(
                                 node, time.perf_counter() - start, True, False
                             )
                         ts.done(node)
+                        for ready in ts.get_ready():
+                            submit(ready)
                         return
                     if node._exec_deps:
                         self._ensure_deps_ready(node)

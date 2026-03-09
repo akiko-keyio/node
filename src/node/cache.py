@@ -122,9 +122,7 @@ class DiskJoblib(Cache):
         Returns:
             Path to the cache file.
         """
-        sub = self.root / fn_name
-        sub.mkdir(parents=True, exist_ok=True)
-        return sub / (f"{hash_value:x}" + ext)
+        return (self.root / fn_name) / (f"{hash_value:x}" + ext)
 
     def contains(self, fn_name: str, hash_value: int) -> bool:
         p = self._path(fn_name, hash_value)
@@ -172,6 +170,7 @@ class DiskJoblib(Cache):
 
     def put(self, fn_name: str, hash_value: int, value: Any):
         p = self._path(fn_name, hash_value)
+        p.parent.mkdir(parents=True, exist_ok=True)
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else nullcontext()
         with ctx:
@@ -191,6 +190,7 @@ class DiskJoblib(Cache):
 
     def save_script(self, node: "Node"):
         p = self._path(node.fn.__name__, node._hash, ".py")
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(repr(node) + "\n")
 
 

@@ -126,26 +126,22 @@ def broadcast(
     
     # Pre-compute indices mapping
     bcast_dim_to_idx = {d: i for i, d in enumerate(broadcast_dims)}
+    vector_dim_positions = {
+        k: [bcast_dim_to_idx.get(d) for d in v.dims]
+        for k, v in inputs.items()
+        if isinstance(v, Node) and v.dims
+    }
     
     for indices in itertools.product(*ranges):
         scalar_inputs = {}
         for k, v in inputs.items():
             if isinstance(v, Node) and v.dims:
                 # determine slice
-                slice_key = []
-                for d in v.dims:
-                    if d in bcast_dim_to_idx:
-                        idx_pos = bcast_dim_to_idx[d]
-                        slice_key.append(indices[idx_pos])
-                    else:
-                        slice_key.append(slice(None))
-                
-                try:
-                    item = v._items[tuple(slice_key)]
-                    scalar_inputs[k] = item
-                except Exception as e:
-                    # Fallback or re-raise
-                    raise e
+                slice_key = tuple(
+                    indices[idx_pos] if idx_pos is not None else slice(None)
+                    for idx_pos in vector_dim_positions[k]
+                )
+                scalar_inputs[k] = v._items[slice_key]
             else:
                 scalar_inputs[k] = v
         
