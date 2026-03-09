@@ -23,3 +23,6 @@ example/
 # Logs and temp files
 *.log
 *.txt
+
+# Local AI tooling
+.claude/
