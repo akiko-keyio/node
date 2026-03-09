@@ -331,21 +331,40 @@ def build_graph(
     """
     
     edges: dict["Node", list["Node"]] = {}
-    stack = [root]
+    order: list["Node"] = []
     seen: set["Node"] = set()
+    # (node, expanded) two-phase traversal:
+    # - expanded=False: discover node/deps
+    # - expanded=True: append node after deps, yielding topological order
+    stack: list[tuple["Node", bool]] = [(root, False)]
+
     while stack:
-        node = stack.pop()
+        node, expanded = stack.pop()
+        if expanded:
+            order.append(node)
+            continue
         if node in seen:
             continue
         seen.add(node)
-        hit = cache is not None and node.cache and cache.contains(node.fn.__name__, node._hash)
+
+        hit = (
+            cache is not None
+            and node.cache
+            and cache.contains(node.fn.__name__, node._hash)
+        )
         if hit:
             edges[node] = []
+            order.append(node)
             continue
+
         deps = node._exec_deps
         edges[node] = deps
-        stack.extend(deps)
-    order = list(TopologicalSorter(edges).static_order())
+        stack.append((node, True))
+        # Reverse to preserve original dependency order after LIFO pop.
+        for dep in reversed(deps):
+            if dep not in seen:
+                stack.append((dep, False))
+
     return order, edges
 
 
