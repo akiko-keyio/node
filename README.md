@@ -566,14 +566,15 @@ for item, coords in trained.items():
 
 初始化运行时环境。必须在使用任何节点前调用，且只能调用一次。
 
-| 参数                | 默认值                                    | 说明                                  |
-| ------------------- | ----------------------------------------- | ------------------------------------- |
-| `config`            | `None`                                    | Config 对象或 YAML 文件路径           |
-| `cache`             | `ChainCache([MemoryLRU(), DiskJoblib()])` | 缓存后端                              |
-| `executor`          | `"thread"`                                | 执行器类型：`"thread"` 或 `"process"` |
-| `workers`           | `4`                                       | 默认并发数                            |
-| `continue_on_error` | `True`                                    | 节点失败时是否继续执行其他节点        |
-| `validate`          | `True`                                    | 是否使用 Pydantic 验证参数类型        |
+| 参数                      | 默认值                                    | 说明                                  |
+| ------------------------- | ----------------------------------------- | ------------------------------------- |
+| `config`                  | `None`                                    | Config 对象或 YAML 文件路径           |
+| `cache`                   | `ChainCache([MemoryLRU(), DiskJoblib()])` | 缓存后端                              |
+| `executor`                | `"thread"`                                | 执行器类型：`"thread"` 或 `"process"` |
+| `workers`                 | `4`                                       | 默认并发数                            |
+| `continue_on_error`       | `True`                                    | 节点失败时是否继续执行其他节点        |
+| `validate`                | `True`                                    | 是否使用 Pydantic 验证参数类型        |
+| `limit_inner_parallelism` | `True`                                    | 限制节点内部的 BLAS/OpenMP 线程数     |
 
 ```python
 # 重新配置需先重置
