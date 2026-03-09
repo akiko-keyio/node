@@ -28,6 +28,11 @@ __all__ = [
 class Cache:
     """Base cache interface."""
 
+    def contains(self, fn_name: str, hash_value: int) -> bool:
+        """Check whether a cached value exists without loading it."""
+        hit, _ = self.get(fn_name, hash_value)
+        return hit
+
     def get(self, fn_name: str, hash_value: int) -> tuple[bool, Any]:
         """Get a cached value.
         
@@ -72,9 +77,10 @@ class MemoryLRU(Cache):
         self._lock = threading.Lock()
 
     def get(self, fn_name: str, hash_value: int):
-        if hash_value in self._lru:
+        try:
             return True, self._lru[hash_value]
-        return False, None
+        except KeyError:
+            return False, None
 
     def put(self, fn_name: str, hash_value: int, value: Any):
         self._lru[hash_value] = value
@@ -119,6 +125,13 @@ class DiskJoblib(Cache):
         sub = self.root / fn_name
         sub.mkdir(parents=True, exist_ok=True)
         return sub / (f"{hash_value:x}" + ext)
+
+    def contains(self, fn_name: str, hash_value: int) -> bool:
+        p = self._path(fn_name, hash_value)
+        try:
+            return p.exists()
+        except OSError:
+            return False
 
     def get(self, fn_name: str, hash_value: int):
         p = self._path(fn_name, hash_value)
@@ -189,14 +202,39 @@ class ChainCache(Cache):
         self._lock = threading.Lock()
 
     def get(self, fn_name: str, hash_value: int):
+        if not self.caches:
+            return False, None
+
+        # Fast path: in hot runs most lookups hit L1 cache.
+        # Avoid a global lock here to reduce contention in threaded execution.
+        hit, val = self.caches[0].get(fn_name, hash_value)
+        if hit:
+            return True, val
+
+        # Slow path: when a lower layer hits, serialize promotion to keep
+        # behavior deterministic and avoid duplicate put storms.
         with self._lock:
-            for i, c in enumerate(self.caches):
+            # Re-check L1 after waiting for the lock: another thread may have
+            # already promoted this key.
+            hit, val = self.caches[0].get(fn_name, hash_value)
+            if hit:
+                return True, val
+
+            for i, c in enumerate(self.caches[1:], start=1):
                 hit, val = c.get(fn_name, hash_value)
                 if hit:
                     for earlier in self.caches[:i]:
                         earlier.put(fn_name, hash_value, val)
                     return True, val
         return False, None
+
+    def contains(self, fn_name: str, hash_value: int) -> bool:
+        if not self.caches:
+            return False
+        for c in self.caches:
+            if c.contains(fn_name, hash_value):
+                return True
+        return False
 
     def put(self, fn_name: str, hash_value: int, value: Any):
         for c in self.caches:

@@ -338,7 +338,7 @@ def build_graph(
         if node in seen:
             continue
         seen.add(node)
-        hit = cache is not None and node.cache and cache.get(node.fn.__name__, node._hash)[0]
+        hit = cache is not None and node.cache and cache.contains(node.fn.__name__, node._hash)
         if hit:
             edges[node] = []
             continue
