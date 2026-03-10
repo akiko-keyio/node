@@ -91,8 +91,9 @@ class MemoryLRU(Cache):
 class DiskCache(Cache):
     """Filesystem cache using pickle.
 
-    Results are stored under ``<func>/<hash>.pkl`` and the corresponding script
-    is written to ``<func>/<hash>.py`` for inspection.
+    Results are stored under ``<func>/<hash>.pkl`` and dimension aggregate
+    results are stored under ``<func>/dim/<hash>.pkl``. The corresponding script
+    is written alongside each entry as ``.py`` for inspection.
 
     Cache payloads are serialized with ``pickle`` and stored as ``.pkl`` files.
     """
@@ -172,7 +173,8 @@ class DiskCache(Cache):
                     p.unlink()
 
     def save_script(self, node: "Node"):
-        p = self._path(node.fn.__name__, node._hash, ".py")
+        fn_name = f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
+        p = self._path(fn_name, node._hash, ".py")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(repr(node) + "\n")
 

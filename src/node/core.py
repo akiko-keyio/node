@@ -331,6 +331,11 @@ from .dimension import dimension, broadcast as _broadcast
 from .hashing import compute_node_identity, _canonical
 
 
+def _cache_fn_name(node: "Node") -> str:
+    """Return cache namespace for a node."""
+    return f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
+
+
 def build_graph(
     root: "Node", cache: "Cache | None"
 ) -> tuple[list["Node"], dict["Node", list["Node"]]]:
@@ -360,7 +365,7 @@ def build_graph(
         hit = (
             cache is not None
             and node.cache
-            and cache.contains(node.fn.__name__, node._hash)
+            and cache.contains(_cache_fn_name(node), node._hash)
         )
         if hit:
             edges[node] = []

@@ -134,6 +134,14 @@ def _call_fn(
             _track_ctx.node = prev
 
 
+def _cache_fn_name(node: "Node") -> str:
+    """Return cache namespace for a node.
+
+    Dimension aggregate results are stored under ``<fn_name>/dim``.
+    """
+    return f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
+
+
 class Runtime:
     """Singleton runtime for executing DAG nodes.
 
@@ -215,7 +223,7 @@ class Runtime:
             # First check _results (for just-computed nodes), then cache
             if v._hash in self._results:
                 return self._results[v._hash]
-            hit, val = self.cache.get(v.fn.__name__, v._hash)
+            hit, val = self.cache.get(_cache_fn_name(v), v._hash)
             return val if hit else None
         elif isinstance(v, dict):
             return {k: self._resolve(item) for k, item in v.items()}
@@ -272,7 +280,7 @@ class Runtime:
         
         if node.cache:
             self._set_node_state(node, "cache_writing")
-            self.cache.put(node.fn.__name__, node._hash, val)
+            self.cache.put(_cache_fn_name(node), node._hash, val)
             if self._can_save:
                 self.cache.save_script(node)
         
@@ -286,7 +294,7 @@ class Runtime:
             if dep._hash in self._results:
                 continue
             if dep.cache:
-                dep_hit, dep_val = self.cache.get(dep.fn.__name__, dep._hash)
+                dep_hit, dep_val = self.cache.get(_cache_fn_name(dep), dep._hash)
                 if dep_hit:
                     self._results[dep._hash] = dep_val
                     continue
@@ -306,7 +314,7 @@ class Runtime:
             self.on_node_start(n)
         if n.cache:
             self._set_node_state(n, "cache_reading")
-        hit, val = self.cache.get(n.fn.__name__, n._hash) if n.cache else (False, None)
+        hit, val = self.cache.get(_cache_fn_name(n), n._hash) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
             self._results[n._hash] = val
@@ -354,7 +362,7 @@ class Runtime:
                 self._results[n._hash] = val
                 if n.cache:
                     self._set_node_state(n, "cache_writing")
-                    self.cache.put(n.fn.__name__, n._hash, val)
+                    self.cache.put(_cache_fn_name(n), n._hash, val)
                     if self._can_save:
                         self.cache.save_script(n)
 
@@ -424,7 +432,7 @@ class Runtime:
         t0 = time.perf_counter()
 
         use_cache = cache_root and root.cache
-        hit, val = self.cache.get(root.fn.__name__, root._hash) if use_cache else (False, None)
+        hit, val = self.cache.get(_cache_fn_name(root), root._hash) if use_cache else (False, None)
 
         if hit:
             self._results[root._hash] = val
@@ -579,7 +587,7 @@ class Runtime:
                         self.on_node_start(node)
                     if node.cache:
                         self._set_node_state(node, "cache_reading")
-                    hit, val = self.cache.get(node.fn.__name__, node._hash) if node.cache else (False, None)
+                    hit, val = self.cache.get(_cache_fn_name(node), node._hash) if node.cache else (False, None)
                     if hit:
                         self._results[node._hash] = val
                         if self.on_node_end:
@@ -665,4 +673,4 @@ class Runtime:
 
     def delete(self, root: Node) -> None:
         """Delete cache entry for ``root``."""
-        self.cache.delete(root.fn.__name__, root._hash)
+        self.cache.delete(_cache_fn_name(root), root._hash)
