@@ -117,10 +117,10 @@ class _RichReporterCtx:
     """Context manager handling ``rich`` updates for a run."""
 
     _STATE_LABELS = {
-        "waiting": "wait",
-        "cache_reading": "read",
-        "executing": "exec",
-        "cache_writing": "write",
+        "waiting": "waiting",
+        "cache_reading": "cache reading",
+        "executing": "executing",
+        "cache_writing": "cache writing",
     }
     _STATE_ORDER = ("executing", "cache_writing", "cache_reading", "waiting")
 
