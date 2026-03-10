@@ -81,3 +81,24 @@ def test_state_tracking_updates_counts():
     assert ctx.stats[fn_name].state_counts == {}
 
     ctx.__exit__(None, None, None)
+
+
+def test_waiting_only_row_uses_compact_format():
+    """Waiting-only rows should hide spinner/state/duration."""
+    ctx = _make_ctx()
+    ctx.__enter__()
+
+    lines = ctx._render().renderables
+    assert len(lines) == 1
+    plain = lines[0].plain
+    assert plain.startswith("~ ")
+    assert "(waiting" not in plain
+    assert "[" not in plain
+
+    ctx.__exit__(None, None, None)
+
+
+def test_state_labels_use_reading_writing_names():
+    """State labels should use short reading/writing names."""
+    assert _RichReporterCtx._STATE_LABELS["cache_reading"] == "reading"
+    assert _RichReporterCtx._STATE_LABELS["cache_writing"] == "writing"

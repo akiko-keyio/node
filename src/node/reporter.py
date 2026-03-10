@@ -117,12 +117,11 @@ class _RichReporterCtx:
     """Context manager handling ``rich`` updates for a run."""
 
     _STATE_LABELS = {
-        "waiting": "waiting",
-        "cache_reading": "cache reading",
+        "cache_reading": "reading",
         "executing": "executing",
-        "cache_writing": "cache writing",
+        "cache_writing": "writing",
     }
-    _STATE_ORDER = ("executing", "cache_writing", "cache_reading", "waiting")
+    _STATE_ORDER = ("executing", "cache_writing", "cache_reading")
 
     def __init__(
         self,
@@ -457,6 +456,16 @@ class _RichReporterCtx:
             parts.append(label if count == 1 else f"{label} x{count}")
         return ", ".join(parts) if parts else None
 
+    @staticmethod
+    def _is_waiting_only(stats: _TaskStats) -> bool:
+        waiting = stats.state_counts.get("waiting", 0)
+        if waiting <= 0:
+            return False
+        return all(
+            state == "waiting" or count <= 0
+            for state, count in stats.state_counts.items()
+        )
+
 
     # --------------------------------------------------------------
     def _render(self, final: bool = False) -> Group:
@@ -500,6 +509,17 @@ class _RichReporterCtx:
                     Text(f"{fn_name}"), # Default style
                     Text(" "),
                     Text(dur_str, style="blue")
+                ]
+            elif self._is_waiting_only(stats):
+                # Waiting-only: compact line without spinner or state text.
+                # ~ 0/7 task_name
+                count_text = f"{stats.completed}/{stats.total}"
+                parts = [
+                    Text("~"),
+                    Text(" "),
+                    Text(f"{count_text}"),
+                    Text(" "),
+                    Text(f"{fn_name}"),
                 ]
             else:
                 # Running: Orange style
