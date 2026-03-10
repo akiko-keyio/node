@@ -84,6 +84,7 @@ class Node:
         inputs: dict[str, Any],
         *,
         cache: bool = True,
+        cache_aggregate: bool | None = None,
         dims: tuple[str, ...] = (),
         coords: dict[str, list[Any]] | None = None,
         reduce_dims: Sequence[str] | str = (),
@@ -97,7 +98,12 @@ class Node:
         inputs : dict[str, Any]
             Input arguments for the function. Values can be constant values or other Nodes.
         cache : bool, optional
-            Whether to cache the result of this node. Defaults to True.
+            Whether to cache broadcast child nodes created from this node.
+            Defaults to True.
+        cache_aggregate : bool | None, optional
+            Whether to cache this node's own result. When ``None``, follows
+            ``cache``. This allows aggregate dimension results to skip caching
+            while still caching their broadcast child nodes.
         dims : tuple[str, ...], optional
             Dimensions associated with this node (if it's a VectorNode).
         coords : dict[str, list[Any]], optional
@@ -110,7 +116,7 @@ class Node:
         """
         self.fn = fn
         self.inputs = inputs
-        self.cache = cache
+        self.cache = cache if cache_aggregate is None else cache_aggregate
         
         self.dims = dims
         self.coords = coords or {}
@@ -140,7 +146,9 @@ class Node:
             output_dims = tuple(d for d in sorted(all_input_dims) if d not in reduce_set)
             
             # Use output_dims as target for broadcasting
-            self.dims, self.coords, self._items = _broadcast(fn, inputs, vector_inputs, cache, target_dims=output_dims)
+            self.dims, self.coords, self._items = _broadcast(
+                fn, inputs, vector_inputs, cache, target_dims=output_dims
+            )
             
             # If the result is a Single Node (Scalar), adopt its wired inputs
             if not self.dims:
@@ -148,7 +156,9 @@ class Node:
 
         elif not dims and vector_inputs:
             # Default: Automatic Broadcasting (Map) over ALL dims
-            self.dims, self.coords, self._items = _broadcast(fn, inputs, vector_inputs, cache, target_dims=None)
+            self.dims, self.coords, self._items = _broadcast(
+                fn, inputs, vector_inputs, cache, target_dims=None
+            )
             
         else:
              # Scalar or Explicit Vector Creation (via decorator)
@@ -373,6 +383,7 @@ def define(
     ignore: list[str] | None = None,
     workers: int | None = None,
     cache: bool = True,
+    cache_aggregate: bool | None = None,
     local: bool = False,
     reduce_dims: Sequence[str] | str = (),
 ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
@@ -385,7 +396,12 @@ def define(
     workers : int, optional
         Maximum concurrency for this function. ``-1`` uses all cores.
     cache : bool, optional
-        Whether to cache the result. Defaults to True.
+        Whether to cache child nodes created during broadcasting. Defaults to
+        True.
+    cache_aggregate : bool | None, optional
+        Whether to cache the node's own result. When ``None``, follows
+        ``cache``. This is useful for dimensioned aggregate results where child
+        nodes should be cached but the final collected result should not.
     local : bool, optional
         Execute directly in the caller thread, bypassing any executor. 
         Defaults to False.
@@ -465,7 +481,13 @@ def define(
                     bound.arguments[name] = val
             bound.apply_defaults()
 
-            node = Node(selected_fn, bound.arguments, cache=cache, reduce_dims=reduce_dims)
+            node = Node(
+                selected_fn,
+                bound.arguments,
+                cache=cache,
+                cache_aggregate=cache_aggregate,
+                reduce_dims=reduce_dims,
+            )
             cached_node = current_runtime._registry.get(node)
             if cached_node is not None:
                 return cached_node
