@@ -194,12 +194,18 @@ class Runtime:
         # Callbacks (for reporter integration)
         self.on_node_start: Callable[[Node], None] | None = None
         self.on_node_end: Callable[[Node, float, bool, bool], None] | None = None
+        self.on_node_state: Callable[[Node, str], None] | None = None
         self.on_flow_end: Callable[[Node, float, int, int], None] | None = None
 
 
     def reset_config(self) -> None:
         """Restore the configuration used at initialization."""
         self.config.copy_from(self._initial_config)
+
+    def _set_node_state(self, node: Node, state: str) -> None:
+        """Emit node state transitions for progress reporters."""
+        if self.on_node_state is not None:
+            self.on_node_state(node, state)
 
 
     def _resolve(self, v):
@@ -265,6 +271,7 @@ class Runtime:
             self._exec_count += 1
         
         if node.cache:
+            self._set_node_state(node, "cache_writing")
             self.cache.put(node.fn.__name__, node._hash, val)
             if self._can_save:
                 self.cache.save_script(node)
@@ -297,6 +304,8 @@ class Runtime:
             return None
         if self.on_node_start is not None:
             self.on_node_start(n)
+        if n.cache:
+            self._set_node_state(n, "cache_reading")
         hit, val = self.cache.get(n.fn.__name__, n._hash) if n.cache else (False, None)
         if hit:
             dur = time.perf_counter() - start
@@ -306,14 +315,17 @@ class Runtime:
             return val
 
         if n._exec_deps:
+            self._set_node_state(n, "waiting")
             self._ensure_deps_ready(n)
 
         acquired = False
         if sem is not None:
+            self._set_node_state(n, "waiting")
             sem.acquire()
             acquired = True
 
         try:
+            self._set_node_state(n, "executing")
             if n._items is not None:
                 # VectorNode / Reduction Node:
                 # The result is the aggregation of its items (which are dependencies).
@@ -341,6 +353,7 @@ class Runtime:
 
                 self._results[n._hash] = val
                 if n.cache:
+                    self._set_node_state(n, "cache_writing")
                     self.cache.put(n.fn.__name__, n._hash, val)
                     if self._can_save:
                         self.cache.save_script(n)
@@ -417,6 +430,7 @@ class Runtime:
             self._results[root._hash] = val
             if self.on_node_start is not None:
                 self.on_node_start(root)
+            self._set_node_state(root, "cache_reading")
             if self.on_node_end is not None:
                 self.on_node_end(root, time.perf_counter() - t0, True, False)
             if self.on_flow_end is not None:
@@ -563,6 +577,8 @@ class Runtime:
                     start = time.perf_counter()
                     if self.on_node_start:
                         self.on_node_start(node)
+                    if node.cache:
+                        self._set_node_state(node, "cache_reading")
                     hit, val = self.cache.get(node.fn.__name__, node._hash) if node.cache else (False, None)
                     if hit:
                         self._results[node._hash] = val
@@ -576,13 +592,16 @@ class Runtime:
                             submit(ready)
                         return
                     if node._exec_deps:
+                        self._set_node_state(node, "waiting")
                         self._ensure_deps_ready(node)
                     resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
                     args, kwargs = self._bind_args(node, resolved_bound)
                     sem = sems[node.fn]
                     if not sem.acquire(blocking=False):
+                        self._set_node_state(node, "waiting")
                         enqueue_pending(node)
                         return
+                    self._set_node_state(node, "executing")
                     fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
                     fut_map[fut] = (node, start, sem, args, kwargs)
 

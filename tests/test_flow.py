@@ -432,6 +432,25 @@ def test_callbacks_invoked(runtime_factory):
     assert events == [("node", True, False), ("rt", 0, 0)]
 
 
+def test_node_state_callbacks_invoked(runtime_factory):
+    events = []
+    rt = runtime_factory()
+    rt.on_node_state = lambda _node, state: events.append(state)
+
+    @node.define()
+    def add(x, y):
+        return x + y
+
+    leaf = add(1, 2)
+    root = add(leaf, 3)
+
+    assert rt.run(root) == 6
+    assert "cache_reading" in events
+    assert "executing" in events
+    assert "cache_writing" in events
+    assert "waiting" in events
+
+
 def test_cache_scripts(runtime_factory, tmp_path):
     disk = DiskJoblib(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))

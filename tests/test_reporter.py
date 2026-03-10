@@ -58,3 +58,26 @@ def test_start_uses_syntax():
     assert ctx.stats[fn_name].running >= 0
     
     ctx.__exit__(None, None, None)
+
+
+def test_state_tracking_updates_counts():
+    """Reporter should track node state transitions."""
+    ctx = _make_ctx()
+    ctx.__enter__()
+
+    fn_name = ctx.root.fn.__name__
+    assert ctx.stats[fn_name].state_counts == {"waiting": 1}
+
+    ctx._state(ctx.root, "cache_reading")
+    ctx._drain()
+    assert ctx.stats[fn_name].state_counts == {"cache_reading": 1}
+
+    ctx._state(ctx.root, "executing")
+    ctx._drain()
+    assert ctx.stats[fn_name].state_counts == {"executing": 1}
+
+    ctx._end(ctx.root, 0.1, False, False)
+    ctx._drain()
+    assert ctx.stats[fn_name].state_counts == {}
+
+    ctx.__exit__(None, None, None)

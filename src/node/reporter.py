@@ -110,10 +110,19 @@ class _TaskStats:
         self.running = 0
         self.first_start: float | None = None
         self.last_end: float | None = None
+        self.state_counts: dict[str, int] = {}
 
 
 class _RichReporterCtx:
     """Context manager handling ``rich`` updates for a run."""
+
+    _STATE_LABELS = {
+        "waiting": "wait",
+        "cache_reading": "read",
+        "executing": "exec",
+        "cache_writing": "write",
+    }
+    _STATE_ORDER = ("executing", "cache_writing", "cache_reading", "waiting")
 
     def __init__(
         self,
@@ -142,6 +151,7 @@ class _RichReporterCtx:
         
         # Internal tracking
         self.node_to_fn_name: dict[str, str] = {}
+        self.node_states: dict[str, str] = {}
         self.running_nodes: set[str] = set()
         
         # Restore tracking attributes for track() support
@@ -221,9 +231,11 @@ class _RichReporterCtx:
     def __enter__(self):
         self.orig_start = self.runtime.on_node_start
         self.orig_end = self.runtime.on_node_end
+        self.orig_state = getattr(self.runtime, "on_node_state", None)
         self.orig_flow = self.runtime.on_flow_end
         self.runtime.on_node_start = self._start
         self.runtime.on_node_end = self._end
+        self.runtime.on_node_state = self._state
         self.runtime.on_flow_end = self._flow
         
         # Pre-calculate totals by function name
@@ -237,6 +249,7 @@ class _RichReporterCtx:
                 self.stats[fn_name] = _TaskStats(0)
                 self.task_order.append(fn_name)
             self.stats[fn_name].total += 1
+            self._set_local_state(node._hash, "waiting")
 
         self.live = Live(
             self._render(),
@@ -262,6 +275,7 @@ class _RichReporterCtx:
             self.live.console.print(final_render)
         self.runtime.on_node_start = self.orig_start
         self.runtime.on_node_end = self.orig_end
+        self.runtime.on_node_state = self.orig_state
         self.runtime.on_flow_end = self.orig_flow
         _set_process_queue(None)
 
@@ -299,6 +313,11 @@ class _RichReporterCtx:
         self.current_node = None
         if self.orig_end:
             self.orig_end(n, dur, cached, failed)
+
+    def _state(self, n: Node, state: str) -> None:
+        self.q.put(("state", n._hash, state))
+        if self.orig_state:
+            self.orig_state(n, state)
 
     def _flow(self, root: Node, wall: float, count: int, fails: int) -> None:
         self.q.put(("flow", wall))
@@ -348,11 +367,16 @@ class _RichReporterCtx:
                         stats.first_start = ts
                     stats.running += 1
                 self.running_nodes.add(k)
-                    
+
+            elif typ == "state":
+                k, state = rest
+                self._set_local_state(k, state)
+
             elif typ == "end":
                 k, dur, cached, failed = rest
                 if k in self.running_nodes:
                     self.running_nodes.remove(k)
+                self._clear_local_state(k)
                 
                 fn_name = self.node_to_fn_name.get(k)
                 if fn_name:
@@ -393,6 +417,45 @@ class _RichReporterCtx:
                             ids.discard(tid)
                             if not ids:
                                 self.node_track_ids.pop(node_key, None)
+
+    def _set_local_state(self, node_key: str, state: str) -> None:
+        fn_name = self.node_to_fn_name.get(node_key)
+        if fn_name is None:
+            return
+        stats = self.stats[fn_name]
+        prev = self.node_states.get(node_key)
+        if prev == state:
+            return
+        if prev is not None:
+            prev_count = stats.state_counts.get(prev, 0) - 1
+            if prev_count > 0:
+                stats.state_counts[prev] = prev_count
+            else:
+                stats.state_counts.pop(prev, None)
+        self.node_states[node_key] = state
+        stats.state_counts[state] = stats.state_counts.get(state, 0) + 1
+
+    def _clear_local_state(self, node_key: str) -> None:
+        fn_name = self.node_to_fn_name.get(node_key)
+        prev = self.node_states.pop(node_key, None)
+        if fn_name is None or prev is None:
+            return
+        stats = self.stats[fn_name]
+        prev_count = stats.state_counts.get(prev, 0) - 1
+        if prev_count > 0:
+            stats.state_counts[prev] = prev_count
+        else:
+            stats.state_counts.pop(prev, None)
+
+    def _format_state_summary(self, stats: _TaskStats) -> str | None:
+        parts = []
+        for state in self._STATE_ORDER:
+            count = stats.state_counts.get(state, 0)
+            if count <= 0:
+                continue
+            label = self._STATE_LABELS.get(state, state.replace("_", " "))
+            parts.append(label if count == 1 else f"{label} x{count}")
+        return ", ".join(parts) if parts else None
 
 
     # --------------------------------------------------------------
@@ -443,6 +506,7 @@ class _RichReporterCtx:
                 # ⠋ 2/7 Task3 Name [1.9 s | ETA 5.7 s]
                 icon = spinner
                 count_text = f"{stats.completed}/{stats.total}"
+                state_summary = self._format_state_summary(stats)
                 sec_key = int(duration)
                 cached = self._eta_cache.get(fn_name)
                 if cached is not None and cached[0] == sec_key:
@@ -464,9 +528,20 @@ class _RichReporterCtx:
                     Text(f"{count_text}", style="orange1"),
                     Text(" "),
                     Text(f"{fn_name}"), # Default style
-                    Text(" "),
-                    Text(dur_str, style="bold orange1")
                 ]
+                if state_summary is not None:
+                    parts.extend(
+                        [
+                            Text(" "),
+                            Text(f"({state_summary})", style="orange1"),
+                        ]
+                    )
+                parts.extend(
+                    [
+                        Text(" "),
+                        Text(dur_str, style="bold orange1"),
+                    ]
+                )
             
             lines.append(Text.assemble(*parts))
             
