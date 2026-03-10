@@ -4,6 +4,7 @@ import threading
 
 import node
 from node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
+import numpy as np
 import pytest
 
 
@@ -630,6 +631,42 @@ def test_cached_dependency_skips_upstream(runtime_factory):
     assert b_node._hash in cache.calls
 
 
+def test_root_cache_hit_reads_only_root_entry(runtime_factory):
+    class TrackingCache(MemoryLRU):
+        def __init__(self):
+            super().__init__()
+            self.calls: list[tuple[str, int]] = []
+
+        def get(self, fn_name: str, hash_value: int):  # type: ignore[override]
+            self.calls.append((fn_name, hash_value))
+            return super().get(fn_name, hash_value)
+
+    cache = TrackingCache()
+    rt = runtime_factory(cache=cache)
+
+    @node.define()
+    def c():
+        return 1
+
+    @node.define()
+    def b(x):
+        return x + 1
+
+    @node.define()
+    def a(y):
+        return y + 1
+
+    root = a(b(c()))
+
+    # First run: compute and cache everything.
+    assert rt.run(root) == 3
+
+    # Second run: root cache hit should short-circuit without child cache reads.
+    cache.calls.clear()
+    assert rt.run(root) == 3
+    assert cache.calls == [(root.fn.__name__, root._hash)]
+
+
 def test_run_releases_intermediate_results(runtime_factory):
     rt = runtime_factory(cache=MemoryLRU(), workers=1)
 
@@ -648,6 +685,118 @@ def test_run_releases_intermediate_results(runtime_factory):
     root = a(b(c(10)))
     assert rt.run(root) == 19
     assert set(rt._results.keys()) == {root._hash}
+
+
+def test_memory_aware_scheduling_prioritizes_last_consumers(runtime_factory):
+    rt = runtime_factory(cache=MemoryLRU(), workers=1, memory_aware_scheduling=True)
+    order: list[str] = []
+
+    @node.define(cache=False)
+    def x():
+        order.append("x")
+        return 1
+
+    @node.define(cache=False)
+    def y():
+        order.append("y")
+        return 2
+
+    @node.define(cache=False)
+    def p(a):
+        order.append("p")
+        return a + 10
+
+    @node.define(cache=False)
+    def q(a, b):
+        order.append("q")
+        return a + b
+
+    @node.define(cache=False)
+    def root_fn(left, right):
+        order.append("root")
+        return left + right
+
+    root = root_fn(p(x()), q(x(), y()))
+    assert rt.run(root) == 14
+    assert order.index("q") < order.index("p")
+    assert set(rt._results.keys()) == {root._hash}
+
+
+def test_memory_aware_scheduling_reduces_peak_bytes_for_large_results(runtime_factory):
+    n = 2_000_000  # ~16MB per float64 array
+
+    class ByteTrackingResults(dict):
+        def __init__(self):
+            super().__init__()
+            self.current_bytes = 0
+            self.max_bytes = 0
+            self._sizes: dict[int, int] = {}
+
+        @staticmethod
+        def _estimate_size(value) -> int:
+            if hasattr(value, "nbytes"):
+                return int(value.nbytes)
+            return 0
+
+        def __setitem__(self, key, value):
+            if key in self._sizes:
+                self.current_bytes -= self._sizes[key]
+            size = self._estimate_size(value)
+            super().__setitem__(key, value)
+            self._sizes[key] = size
+            self.current_bytes += size
+            if self.current_bytes > self.max_bytes:
+                self.max_bytes = self.current_bytes
+
+        def pop(self, key, default=None):
+            if key in self._sizes:
+                self.current_bytes -= self._sizes.pop(key)
+            return super().pop(key, default)
+
+        def clear(self):
+            super().clear()
+            self._sizes.clear()
+            self.current_bytes = 0
+
+    def build_and_run(memory_aware: bool):
+        node.reset()
+        rt = runtime_factory(
+            cache=MemoryLRU(),
+            workers=1,
+            memory_aware_scheduling=memory_aware,
+        )
+        tracker = ByteTrackingResults()
+        rt._results = tracker
+
+        @node.define(cache=False)
+        def shared():
+            return np.ones(n, dtype=np.float64)
+
+        @node.define(cache=False)
+        def unique_big():
+            return np.full(n, 2.0, dtype=np.float64)
+
+        @node.define(cache=False)
+        def heavy(a):
+            return a * 3.0
+
+        @node.define(cache=False)
+        def release_unique(a, b):
+            # Keep this branch small; its main purpose is to consume unique_big
+            # so the scheduler can release it before heavy() runs.
+            return float(a[0] + b[0])
+
+        @node.define(cache=False)
+        def root_fn(left, right):
+            return float(left[0] + right)
+
+        root = root_fn(heavy(shared()), release_unique(shared(), unique_big()))
+        assert rt.run(root) == pytest.approx(6.0)
+        return tracker.max_bytes
+
+    peak_default = build_and_run(memory_aware=False)
+    peak_memory_aware = build_and_run(memory_aware=True)
+    assert peak_memory_aware < peak_default
 
 
 def test_dimension_chain_limits_in_run_result_footprint(runtime_factory):

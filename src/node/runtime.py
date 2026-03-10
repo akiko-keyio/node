@@ -58,6 +58,7 @@ def configure(
     continue_on_error: bool = True,
     validate: bool = True,
     limit_inner_parallelism: bool = True,
+    memory_aware_scheduling: bool = True,
 ) -> "Runtime":
     """Configure the global Runtime. Can only be called once.
 
@@ -80,6 +81,9 @@ def configure(
     limit_inner_parallelism:
         If True, automatically limit inner parallelism (e.g., sklearn n_jobs,
         numpy BLAS threads) to prevent thread explosion. Defaults to True.
+    memory_aware_scheduling:
+        If True, prioritize ready nodes that can release more dependencies
+        immediately after completion. Defaults to True.
 
     Returns
     -------
@@ -100,6 +104,7 @@ def configure(
             continue_on_error=continue_on_error,
             validate=validate,
             limit_inner_parallelism=limit_inner_parallelism,
+            memory_aware_scheduling=memory_aware_scheduling,
         )
     return _runtime
 
@@ -147,6 +152,7 @@ class Runtime:
         continue_on_error: bool = True,
         validate: bool = True,
         limit_inner_parallelism: bool = True,
+        memory_aware_scheduling: bool = True,
     ):
         # Config
         self.config = config if isinstance(config, Config) else Config(config)
@@ -164,6 +170,7 @@ class Runtime:
         self.workers = workers
         self.continue_on_error = continue_on_error
         self.limit_inner_parallelism = limit_inner_parallelism
+        self.memory_aware_scheduling = memory_aware_scheduling
         self.validate = validate
 
         # Internal state
@@ -429,6 +436,20 @@ class Runtime:
             for dep in deps:
                 dep_refcounts[dep._hash] = dep_refcounts.get(dep._hash, 0) + 1
 
+        def reclaim_gain(node: Node) -> int:
+            gain = 0
+            for dep in node._exec_deps:
+                if dep_refcounts.get(dep._hash) == 1:
+                    gain += 1
+            return gain
+
+        def sorted_ready(nodes: Sequence[Node]) -> list[Node]:
+            ready = list(nodes)
+            if not self.memory_aware_scheduling or len(ready) <= 1:
+                return ready
+            ready.sort(key=reclaim_gain, reverse=True)
+            return ready
+
         def release_consumed_deps(node: Node) -> None:
             for dep in node._exec_deps:
                 dep_hash = dep._hash
@@ -452,9 +473,21 @@ class Runtime:
                 max_node_workers = workers
 
         if min(self.workers, max_node_workers) <= 1:
-            for node in order:
-                self._eval_node(node)
-                release_consumed_deps(node)
+            if not self.memory_aware_scheduling:
+                for node in order:
+                    self._eval_node(node)
+                    release_consumed_deps(node)
+            else:
+                ts = TopologicalSorter(edges)
+                ts.prepare()
+                ready_nodes = sorted_ready(ts.get_ready())
+                while ready_nodes:
+                    node = ready_nodes.pop(0)
+                    self._eval_node(node)
+                    release_consumed_deps(node)
+                    ts.done(node)
+                    newly_ready = list(ts.get_ready())
+                    ready_nodes = sorted_ready([*ready_nodes, *newly_ready])
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
@@ -500,9 +533,9 @@ class Runtime:
             def drain_pending() -> None:
                 if self.executor != "process" or not pending_nodes:
                     return
-                total = len(pending_nodes)
-                for _ in range(total):
-                    pending = pending_nodes.popleft()
+                pending_batch = list(pending_nodes)
+                pending_nodes.clear()
+                for pending in sorted_ready(pending_batch):
                     pending_hashes.discard(pending._hash)
                     submit(pending)
 
@@ -511,7 +544,7 @@ class Runtime:
                     self._fail_node(node, time.perf_counter(), None)
                     release_consumed_deps(node)
                     ts.done(node)
-                    for ready in ts.get_ready():
+                    for ready in sorted_ready(ts.get_ready()):
                         submit(ready)
                     drain_pending()
                     return
@@ -519,7 +552,7 @@ class Runtime:
                     self._eval_node(node)
                     release_consumed_deps(node)
                     ts.done(node)
-                    for ready in ts.get_ready():
+                    for ready in sorted_ready(ts.get_ready()):
                         submit(ready)
                     drain_pending()
                     return
@@ -539,7 +572,7 @@ class Runtime:
                             )
                         release_consumed_deps(node)
                         ts.done(node)
-                        for ready in ts.get_ready():
+                        for ready in sorted_ready(ts.get_ready()):
                             submit(ready)
                         return
                     if node._exec_deps:
@@ -553,7 +586,7 @@ class Runtime:
                     fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
                     fut_map[fut] = (node, start, sem, args, kwargs)
 
-            for n in ts.get_ready():
+            for n in sorted_ready(ts.get_ready()):
                 submit(n)
             drain_pending()
 
@@ -587,7 +620,7 @@ class Runtime:
                                 sem.release()
                                 release_consumed_deps(node)
                                 ts.done(node)
-                                for ready in ts.get_ready():
+                                for ready in sorted_ready(ts.get_ready()):
                                     submit(ready)
                                 continue
                             else:
@@ -598,7 +631,7 @@ class Runtime:
                         sem.release()
                     release_consumed_deps(node)
                     ts.done(node)
-                for n in ts.get_ready():
+                for n in sorted_ready(ts.get_ready()):
                     submit(n)
                 drain_pending()
 
