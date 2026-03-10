@@ -1,9 +1,9 @@
 import node
-from node import Node, ChainCache, MemoryLRU, DiskJoblib
+from node import Node, ChainCache, MemoryLRU, DiskCache
 
 
 def test_repr_matches_script(runtime_factory, tmp_path):
-    rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
+    rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskCache(tmp_path)]))
 
     @node.define()
     def add(x, y):
@@ -22,7 +22,7 @@ def test_repr_matches_script(runtime_factory, tmp_path):
 
 def test_branch_no_diamond(runtime_factory, tmp_path):
     """Branching without shared nodes should not expand to a script."""
-    rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
+    rt = runtime_factory(cache=ChainCache([MemoryLRU(), DiskCache(tmp_path)]))
 
     @node.define()
     def add(x, y):

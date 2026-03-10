@@ -32,7 +32,7 @@ from typing import Any
 # Core exports
 from .core import Node, dimension, define
 from .exceptions import NodeError, ConfigurationError, DimensionMismatchError, CacheError
-from .cache import Cache, ChainCache, MemoryLRU, DiskJoblib
+from .cache import Cache, ChainCache, MemoryLRU, DiskCache
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
 from .logger import logger, console
@@ -123,7 +123,7 @@ __all__ = [
     "Cache",
     "ChainCache",
     "MemoryLRU",
-    "DiskJoblib",
+    "DiskCache",
     # Config
     "Config",
     "cfg",

@@ -3,7 +3,7 @@ from contextlib import nullcontext
 import threading
 
 import node
-from node import Node, Config, ChainCache, MemoryLRU, DiskJoblib
+from node import Node, Config, ChainCache, MemoryLRU, DiskCache
 import numpy as np
 import pytest
 
@@ -272,7 +272,7 @@ def test_set_canonicalization(runtime_factory):
 
 def test_chaincache_promotion(runtime_factory, tmp_path):
     mem = MemoryLRU()
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([mem, disk]))
 
     @node.define()
@@ -452,7 +452,7 @@ def test_node_state_callbacks_invoked(runtime_factory):
 
 
 def test_cache_scripts(runtime_factory, tmp_path):
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
 
     @node.define()
@@ -483,7 +483,7 @@ def test_cache_scripts(runtime_factory, tmp_path):
 
 
 def test_cache_fallback_hash(runtime_factory, tmp_path, monkeypatch):
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
 
     @node.define()
@@ -522,7 +522,7 @@ def test_ignore_signature_fields(runtime_factory):
 
 def test_delete_cache(runtime_factory, tmp_path):
     mem = MemoryLRU()
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([mem, disk]))
     calls = []
 

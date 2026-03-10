@@ -13,7 +13,7 @@ import time
 import yaml  # type: ignore[import]
 
 import node
-from node import ChainCache, Config, DiskJoblib, MemoryLRU
+from node import ChainCache, Config, DiskCache, MemoryLRU
 from node import RichReporter
 node.reset()
 node.configure()
@@ -48,7 +48,7 @@ add:
 # Configure global runtime
 node.reset()
 node.configure(
-    cache=ChainCache([MemoryLRU(), DiskJoblib(".cache")]),
+    cache=ChainCache([MemoryLRU(), DiskCache(".cache")]),
     config=Config(yaml.safe_load(yaml_text)),
     executor="thread",
     workers=2,

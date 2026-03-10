@@ -20,7 +20,7 @@ from loky import ProcessPoolExecutor
 from omegaconf import OmegaConf
 import numpy as np
 
-from .cache import Cache, ChainCache, DiskJoblib, MemoryLRU
+from .cache import Cache, ChainCache, DiskCache, MemoryLRU
 from .config import Config
 from .core import build_graph
 from .logger import logger
@@ -67,7 +67,7 @@ def configure(
     config:
         Configuration object or path to YAML file.
     cache:
-        Cache instance. Defaults to ChainCache(MemoryLRU, DiskJoblib).
+        Cache instance. Defaults to ChainCache(MemoryLRU, DiskCache).
     executor:
         "thread" or "process".
     workers:
@@ -163,7 +163,7 @@ class Runtime:
         )
 
         # Cache
-        self.cache = cache or ChainCache([MemoryLRU(), DiskJoblib()])
+        self.cache = cache or ChainCache([MemoryLRU(), DiskCache()])
 
         # Execution
         self.executor = executor

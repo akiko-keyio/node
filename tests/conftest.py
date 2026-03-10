@@ -7,7 +7,7 @@ src_path = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(src_path))
 
 import pytest
-from node import configure, get_runtime, reset, ChainCache, DiskJoblib, MemoryLRU
+from node import configure, get_runtime, reset, ChainCache, DiskCache, MemoryLRU
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def runtime_factory(tmp_path):
     This ensures all tests use the singleton global runtime.
     """
     def _make(**kwargs):
-        cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskJoblib(tmp_path)]))
+        cache = kwargs.pop("cache", ChainCache([MemoryLRU(), DiskCache(tmp_path)]))
         kwargs.setdefault("continue_on_error", False)
         kwargs.setdefault("validate", False)
         # kwargs.setdefault("reporter", None) # This triggers default RichReporter!

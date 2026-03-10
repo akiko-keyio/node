@@ -8,7 +8,6 @@ from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-import joblib  # type: ignore[import]
 from cachetools import LRUCache  # type: ignore[import]
 from filelock import FileLock  # type: ignore[import]
 
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Cache",
     "MemoryLRU",
-    "DiskJoblib",
+    "DiskCache",
     "ChainCache",
 ]
 
@@ -89,27 +88,23 @@ class MemoryLRU(Cache):
         self._lru.pop(hash_value, None)
 
 
-class DiskJoblib(Cache):
-    """Filesystem cache using joblib pickles.
+class DiskCache(Cache):
+    """Filesystem cache using pickle.
 
     Results are stored under ``<func>/<hash>.pkl`` and the corresponding script
     is written to ``<func>/<hash>.py`` for inspection.
 
-    ``small_file`` sets a byte threshold below which ``pickle`` is used for
-    loading to avoid ``joblib`` overhead on many tiny files.
+    Cache payloads are serialized with ``pickle`` and stored as ``.pkl`` files.
     """
 
     def __init__(
         self,
         root: str | Path = ".cache",
         lock: bool = True,
-        *,
-        small_file: int = 1_000_000,
     ):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
-        self.small_file = small_file
 
     def _path(self, fn_name: str, hash_value: int, ext: str = ".pkl") -> Path:
         """Return the cache file path.
@@ -133,18 +128,10 @@ class DiskJoblib(Cache):
 
     def get(self, fn_name: str, hash_value: int):
         p = self._path(fn_name, hash_value)
-        
-        try:
-            if p.stat().st_size <= self.small_file:
-                try:
-                    with p.open("rb") as fh:
-                        return True, pickle.load(fh)
-                except FileNotFoundError:
-                    return False, None
-            
-            # joblib.load raises FileNotFoundError if file is missing
-            return True, joblib.load(p)
 
+        try:
+            with p.open("rb") as fh:
+                return True, pickle.load(fh)
         except FileNotFoundError:
             return False, None
         except Exception as exc:  # pragma: no cover - defensive
@@ -174,12 +161,8 @@ class DiskJoblib(Cache):
         lock_path = str(p) + ".lock"
         ctx = FileLock(lock_path) if self.lock else nullcontext()
         with ctx:
-            data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-            if len(data) <= self.small_file:
-                with p.open("wb") as fh:
-                    fh.write(data)
-            else:
-                joblib.dump(value, p)
+            with p.open("wb") as fh:
+                pickle.dump(value, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
     def delete(self, fn_name: str, hash_value: int) -> None:
         for ext in (".pkl", ".py"):

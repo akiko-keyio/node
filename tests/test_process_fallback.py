@@ -1,9 +1,9 @@
 import node
-from node import ChainCache, DiskJoblib, MemoryLRU
+from node import ChainCache, DiskCache, MemoryLRU
 
 
 def test_process_pickling_fallback(tmp_path):
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     orig_put = disk.put
 
     def safe_put(fn_name, hash_value, value):

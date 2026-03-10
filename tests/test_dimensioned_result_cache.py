@@ -1,12 +1,12 @@
 import node
-from node import DiskJoblib
+from node import DiskCache
 
 
 def test_dimensioned_result_repr_after_disk_cache(tmp_path):
-    """DimensionedResult repr should work after DiskJoblib cache roundtrip."""
+    """DimensionedResult repr should work after DiskCache roundtrip."""
     node.reset()
     node.configure(
-        cache=DiskJoblib(tmp_path),
+        cache=DiskCache(tmp_path),
         executor="thread",
         workers=1,
         continue_on_error=False,
@@ -26,7 +26,7 @@ def test_dimensioned_result_repr_after_disk_cache(tmp_path):
     assert hasattr(res1, "dims")
     assert hasattr(res1, "coords")
 
-    # Second run: should hit DiskJoblib cache and unpickle DimensionedResult
+    # Second run: should hit DiskCache and unpickle DimensionedResult
     res2 = f(x=dim())()
 
     # Ensure we got the same logical type back
@@ -42,7 +42,7 @@ def test_dimensioned_result_repr_after_disk_cache(tmp_path):
 def test_dimensioned_result_can_skip_aggregate_cache(tmp_path):
     """Broadcast items can be cached while the collected result is not."""
     node.reset()
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     node.configure(
         cache=disk,
         executor="thread",
@@ -75,7 +75,7 @@ def test_dimensioned_result_can_skip_aggregate_cache(tmp_path):
 def test_cache_aggregate_defaults_to_cache(tmp_path):
     """When omitted, aggregate caching should follow the cache flag."""
     node.reset()
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     node.configure(
         cache=disk,
         executor="thread",

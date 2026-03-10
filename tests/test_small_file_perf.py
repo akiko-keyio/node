@@ -4,11 +4,11 @@ import pstats
 import time
 
 import node
-from node import ChainCache, DiskJoblib, MemoryLRU
+from node import ChainCache, DiskCache, MemoryLRU
 
 
-def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
-    cache = ChainCache([MemoryLRU(), DiskJoblib(tmp_path, small_file=small_file)])
+def _profile_run(tmp_path) -> tuple[float, str]:
+    cache = ChainCache([MemoryLRU(), DiskCache(tmp_path)])
     node.reset()
     rt = node.configure(cache=cache, executor="thread", workers=8, reporter=None)
     rt.reporter = None
@@ -37,9 +37,7 @@ def _profile_run(tmp_path, small_file: int) -> tuple[float, str]:
     return duration, buf.getvalue()
 
 
-def test_diskjoblib_small_file_performance(tmp_path):
-    dur_joblib, stat_joblib = _profile_run(tmp_path / "joblib", 0)
-    dur_pickle, stat_pickle = _profile_run(tmp_path / "pickle", 1_000_000)
-    assert "joblib" in stat_joblib
-    assert "joblib" not in stat_pickle
-    assert dur_pickle < dur_joblib
+def test_disk_cache_uses_pickle_only(tmp_path):
+    dur, stats = _profile_run(tmp_path / "pickle")
+    assert dur > 0
+    assert "joblib" not in stats

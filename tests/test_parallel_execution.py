@@ -8,7 +8,7 @@ import time
 import pytest
 
 import node
-from node import DiskJoblib, MemoryLRU, ChainCache
+from node import DiskCache, MemoryLRU, ChainCache
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +22,7 @@ def reset_node():
 @pytest.fixture
 def temp_cache(tmp_path):
     """Provide a temporary cache directory for test isolation."""
-    return ChainCache([MemoryLRU(), DiskJoblib(root=tmp_path / "cache")])
+    return ChainCache([MemoryLRU(), DiskCache(root=tmp_path / "cache")])
 
 
 class TestParallelExecution:
@@ -200,7 +200,7 @@ class TestCacheConcurrency:
 
     def test_cache_prevents_recomputation(self, tmp_path):
         """Verify cache prevents re-execution of the same computation."""
-        cache = ChainCache([MemoryLRU(), DiskJoblib(root=tmp_path / "cache")])
+        cache = ChainCache([MemoryLRU(), DiskCache(root=tmp_path / "cache")])
         node.configure(workers=4, cache=cache)
 
         call_count = 0
@@ -229,7 +229,7 @@ class TestCacheConcurrency:
 
     def test_concurrent_cache_access_safe(self, tmp_path):
         """Verify concurrent access to cache doesn't cause corruption."""
-        cache = ChainCache([MemoryLRU(), DiskJoblib(root=tmp_path / "cache")])
+        cache = ChainCache([MemoryLRU(), DiskCache(root=tmp_path / "cache")])
         node.configure(workers=8, cache=cache)
         
         @node.define()

@@ -1,4 +1,4 @@
-from node import ChainCache, DiskJoblib, MemoryLRU
+from node import ChainCache, DiskCache, MemoryLRU
 from node.core import build_graph
 import node
 
@@ -6,7 +6,7 @@ import node
 def test_build_graph_uses_contains_not_get(tmp_path, monkeypatch, runtime_factory):
     """构图阶段只判断命中，不应触发磁盘反序列化。"""
     mem = MemoryLRU()
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     cache = ChainCache([mem, disk])
     runtime_factory(cache=cache)
 
@@ -30,7 +30,7 @@ def test_build_graph_uses_contains_not_get(tmp_path, monkeypatch, runtime_factor
 def test_corrupt_cached_hit_recovers_with_dependencies(tmp_path, runtime_factory):
     """contains 命中但缓存损坏时，执行阶段应自动回退重算依赖。"""
     calls: list[str] = []
-    disk = DiskJoblib(tmp_path)
+    disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
 
     @node.define()

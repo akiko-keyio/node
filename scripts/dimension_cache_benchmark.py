@@ -11,7 +11,7 @@
   B. decompose  耗时分解：hash / broadcast / build_graph / topo_sort / exec 各环节
   C. contention 线程同步隔离：serial / thread + 不同缓存的锁竞争
   D. gc         GC 关闭 vs 开启的性能差异
-  E. cache      缓存读写（MemoryLRU / DiskJoblib / ChainCache）
+  E. cache      缓存读写（MemoryLRU / DiskCache / ChainCache）
   F. coldwarm   冷热对比
   G. profile    cProfile 热点
 
@@ -40,7 +40,7 @@ from textwrap import indent
 from typing import Any, Callable
 
 import node
-from node import ChainCache, DiskJoblib, MemoryLRU
+from node import ChainCache, DiskCache, MemoryLRU
 from node.core import build_graph
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ class _NoReporter:
 
 
 def _reset(**kw: Any) -> None:
-    """reset runtime 并用给定参数重新配置（默认禁用 reporter & DiskJoblib）。"""
+    """reset runtime 并用给定参数重新配置（默认禁用 reporter & DiskCache）。"""
     node.reset()
     kw.setdefault("reporter", _NoReporter())
     kw.setdefault("cache", MemoryLRU(65536))
@@ -410,7 +410,7 @@ def bench_gc(size: int = 5000) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def bench_cache_rw(size: int) -> None:
-    """MemoryLRU / DiskJoblib / ChainCache 读写性能对比。"""
+    """MemoryLRU / DiskCache / ChainCache 读写性能对比。"""
     _hdr("阶段 E：缓存读写基准")
 
     n = min(size, 1000)
@@ -421,10 +421,10 @@ def bench_cache_rw(size: int) -> None:
     try:
         caches: list[tuple[str, Any]] = [
             ("MemoryLRU", MemoryLRU(maxsize=n + 10)),
-            ("DiskJoblib", DiskJoblib(os.path.join(tmp, "disk"))),
+            ("DiskCache", DiskCache(os.path.join(tmp, "disk"))),
             ("ChainCache(Mem+Disk)", ChainCache([
                 MemoryLRU(maxsize=n + 10),
-                DiskJoblib(os.path.join(tmp, "chain")),
+                DiskCache(os.path.join(tmp, "chain")),
             ])),
         ]
         widths = [28, 14, 14, 14]
@@ -464,7 +464,7 @@ def bench_cold_warm(size: int) -> None:
             ("MemoryLRU only", MemoryLRU(maxsize=size + 100)),
             ("ChainCache(Mem+Disk)", ChainCache([
                 MemoryLRU(maxsize=size + 100),
-                DiskJoblib(os.path.join(tmp, "chain")),
+                DiskCache(os.path.join(tmp, "chain")),
             ])),
         ]
         widths = [32, 12, 12, 10]
@@ -594,7 +594,7 @@ def main() -> None:
   B  耗时分解（hash / broadcast / build_graph / exec）
   C  线程同步隔离（锁竞争）
   D  GC 压力分析
-  E  缓存读写（MemoryLRU/DiskJoblib/ChainCache）
+  E  缓存读写（MemoryLRU/DiskCache/ChainCache）
   F  冷热缓存对比
   G  cProfile 热点分析
 
