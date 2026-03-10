@@ -97,6 +97,19 @@ def get_current_time():
     return datetime.now()
 ```
 
+**只缓存维度子节点，不缓存聚合结果**
+
+多维广播会生成很多子节点；如果你希望这些子节点继续复用磁盘缓存，
+但不想把最终的 `DimensionedResult` 整体再缓存一份，可以这样写：
+
+```python
+@node.define(cache=True, cache_aggregate=False)
+def train_one(model, year):
+    ...
+```
+
+如果未显式设置 `cache_aggregate`，它会默认跟随 `cache`。
+
 **排除参数**
 
 某些参数（如调试标志）不应影响缓存键。使用 `ignore` 排除：
@@ -114,18 +127,18 @@ def compute(x, debug=False, verbose=False):
 默认使用两级缓存：内存 LRU → 磁盘。可自定义缓存策略：
 
 ```python
-from node import ChainCache, MemoryLRU, DiskJoblib
+from node import ChainCache, MemoryLRU, DiskCache
 
 node.configure(cache=ChainCache([
     MemoryLRU(maxsize=512),      # 内存中保留最近 512 个结果
-    DiskJoblib(root=".cache"),   # 持久化到磁盘
+    DiskCache(root=".cache"),   # 持久化到磁盘
 ]))
 ```
 
 | 类型         | 用途           | 配置                           |
 | ------------ | -------------- | ------------------------------ |
 | `MemoryLRU`  | 热数据快速访问 | `maxsize`: 最大条目数          |
-| `DiskJoblib` | 冷数据持久化   | `root`: 缓存目录               |
+| `DiskCache` | 冷数据持久化   | `root`: 缓存目录               |
 | `ChainCache` | 多级组合       | 按顺序查找，命中后回填上级缓存 |
 
 ---
@@ -151,7 +164,7 @@ square_0 = square(z=add_0)
 
 **磁盘缓存自动保存脚本**
 
-使用 `DiskJoblib` 缓存时，脚本会自动保存在缓存目录：
+使用 `DiskCache` 缓存时，脚本会自动保存在缓存目录：
 
 ```
 .cache/
@@ -569,7 +582,7 @@ for item, coords in trained.items():
 | 参数                      | 默认值                                    | 说明                                  |
 | ------------------------- | ----------------------------------------- | ------------------------------------- |
 | `config`                  | `None`                                    | Config 对象或 YAML 文件路径           |
-| `cache`                   | `ChainCache([MemoryLRU(), DiskJoblib()])` | 缓存后端                              |
+| `cache`                   | `ChainCache([MemoryLRU(), DiskCache()])` | 缓存后端                              |
 | `executor`                | `"thread"`                                | 执行器类型：`"thread"` 或 `"process"` |
 | `workers`                 | `4`                                       | 默认并发数                            |
 | `continue_on_error`       | `True`                                    | 节点失败时是否继续执行其他节点        |
@@ -588,7 +601,8 @@ node.configure(workers=8)
 
 | 参数          | 默认值   | 说明                              |
 | ------------- | -------- | --------------------------------- |
-| `cache`       | `True`   | 是否缓存结果                      |
+| `cache`       | `True`   | 是否缓存广播产生的子节点结果      |
+| `cache_aggregate` | `None` | 是否缓存节点自身结果；未设置时跟随 `cache` |
 | `workers`     | 继承全局 | 最大并发数，`-1` 表示使用全部 CPU |
 | `local`       | `False`  | 是否在主线程执行                  |
 | `reduce_dims` | `()`     | 归约维度，`"all"` 表示全部        |

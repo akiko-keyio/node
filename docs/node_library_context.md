@@ -80,6 +80,19 @@ def get_current_time():
     return datetime.now()
 ```
 
+**只缓存维度子节点，不缓存聚合结果**
+
+当多维广播会展开出大量子节点时，可以保留子节点缓存，同时跳过最终
+`DimensionedResult` 的整体缓存：
+
+```python
+@node.define(cache=True, cache_aggregate=False)
+def train_one(model, year):
+    ...
+```
+
+如果不传 `cache_aggregate`，它会默认跟随 `cache` 的行为。
+
 **排除参数**
 
 ```python
@@ -94,7 +107,7 @@ def compute(x, debug=False, verbose=False):
 | 类型         | 用途           | 配置                       |
 | ------------ | -------------- | -------------------------- |
 | `MemoryLRU`  | 热数据快速访问 | `maxsize`: 默认 512        |
-| `DiskJoblib` | 冷数据持久化   | `root`: 默认 ".cache"      |
+| `DiskCache` | 冷数据持久化   | `root`: 默认 ".cache"      |
 | `ChainCache` | 多级组合       | 按顺序查找，命中后回填上级 |
 
 ---
@@ -109,7 +122,7 @@ print(repr(square(add(2, 3))))
 # square_0 = square(z=add_0)
 ```
 
-使用 `DiskJoblib` 时，脚本自动保存：
+使用 `DiskCache` 时，脚本自动保存：
 
 ```
 .cache/
@@ -332,7 +345,7 @@ avgs = site_avg(data=grid)          # dims=("site",)
 | 参数                | 默认值                                    | 说明                        |
 | ------------------- | ----------------------------------------- | --------------------------- |
 | `config`            | `None`                                    | Config 对象或 YAML 文件路径 |
-| `cache`             | `ChainCache([MemoryLRU(), DiskJoblib()])` | 缓存后端                    |
+| `cache`             | `ChainCache([MemoryLRU(), DiskCache()])` | 缓存后端                    |
 | `executor`          | `"thread"`                                | `"thread"` 或 `"process"`   |
 | `workers`           | `4`                                       | 默认并发数                  |
 | `continue_on_error` | `True`                                    | 节点失败时是否继续          |
@@ -342,7 +355,8 @@ avgs = site_avg(data=grid)          # dims=("site",)
 
 | 参数          | 默认值   | 说明                      |
 | ------------- | -------- | ------------------------- |
-| `cache`       | `True`   | 是否缓存结果              |
+| `cache`       | `True`   | 是否缓存广播产生的子节点结果 |
+| `cache_aggregate` | `None` | 是否缓存节点自身结果；未设置时跟随 `cache` |
 | `workers`     | 继承全局 | 最大并发数，`-1` 全部 CPU |
 | `local`       | `False`  | 是否在主线程执行          |
 | `reduce_dims` | `()`     | 归约维度，`"all"` 全部    |
