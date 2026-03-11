@@ -141,6 +141,15 @@ node.configure(cache=ChainCache([
 | `DiskCache` | 冷数据持久化   | `root`: 缓存目录               |
 | `ChainCache` | 多级组合       | 按顺序查找，命中后回填上级缓存 |
 
+**DimensionedResult 缓存范围**
+
+默认仅缓存根节点的 `DimensionedResult`（`cache_dimension_scope="root_only"`），
+中间节点的 `DimensionedResult` 不落盘；若需要保留历史行为可设为 `"all"`：
+
+```python
+node.configure(cache_dimension_scope="all")
+```
+
 ---
 
 ## 追溯
@@ -588,6 +597,7 @@ for item, coords in trained.items():
 | `continue_on_error`       | `True`                                    | 节点失败时是否继续执行其他节点        |
 | `validate`                | `True`                                    | 是否使用 Pydantic 验证参数类型        |
 | `limit_inner_parallelism` | `True`                                    | 限制节点内部的 BLAS/OpenMP 线程数     |
+| `cache_dimension_scope`   | `"root_only"`                             | `DimensionedResult` 缓存范围：`"root_only"`/`"all"` |
 
 ```python
 # 重新配置需先重置

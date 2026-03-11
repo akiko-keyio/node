@@ -337,12 +337,18 @@ def _cache_fn_name(node: "Node") -> str:
 
 
 def build_graph(
-    root: "Node", cache: "Cache | None"
+    root: "Node",
+    cache: "Cache | None",
+    *,
+    cache_filter: Callable[["Node", bool], bool] | None = None,
 ) -> tuple[list["Node"], dict["Node", list["Node"]]]:
     """Return topological order and dependency graph.
 
     When ``cache`` is provided, traversal stops at nodes with a cache hit,
     effectively pruning their ancestors from the resulting graph.
+
+    ``cache_filter`` can be used to selectively disable cache lookup for
+    specific nodes during graph pruning.
     """
     
     edges: dict["Node", list["Node"]] = {}
@@ -365,7 +371,8 @@ def build_graph(
         hit = (
             cache is not None
             and node.cache
-            and cache.contains(_cache_fn_name(node), node._hash)
+            and (cache_filter(node, node is root) if cache_filter is not None else True)
+            and cache._has_entry(_cache_fn_name(node), node._hash)
         )
         if hit:
             edges[node] = []

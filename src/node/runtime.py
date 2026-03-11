@@ -13,7 +13,7 @@ from collections import deque
 
 from graphlib import TopologicalSorter
 from collections.abc import Callable, Sequence
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
 
 from loky import ProcessPoolExecutor
@@ -59,6 +59,7 @@ def configure(
     validate: bool = True,
     limit_inner_parallelism: bool = True,
     memory_aware_scheduling: bool = True,
+    cache_dimension_scope: Literal["root_only", "all"] = "root_only",
 ) -> "Runtime":
     """Configure the global Runtime. Can only be called once.
 
@@ -84,6 +85,11 @@ def configure(
     memory_aware_scheduling:
         If True, prioritize ready nodes that can release more dependencies
         immediately after completion. Defaults to True.
+    cache_dimension_scope:
+        Controls DimensionedResult cache behavior.
+        - "root_only": only cache the root node's DimensionedResult.
+        - "all": cache DimensionedResult for all eligible nodes.
+        Defaults to "root_only".
 
     Returns
     -------
@@ -105,6 +111,7 @@ def configure(
             validate=validate,
             limit_inner_parallelism=limit_inner_parallelism,
             memory_aware_scheduling=memory_aware_scheduling,
+            cache_dimension_scope=cache_dimension_scope,
         )
     return _runtime
 
@@ -161,6 +168,7 @@ class Runtime:
         validate: bool = True,
         limit_inner_parallelism: bool = True,
         memory_aware_scheduling: bool = True,
+        cache_dimension_scope: Literal["root_only", "all"] = "root_only",
     ):
         # Config
         self.config = config if isinstance(config, Config) else Config(config)
@@ -180,6 +188,11 @@ class Runtime:
         self.limit_inner_parallelism = limit_inner_parallelism
         self.memory_aware_scheduling = memory_aware_scheduling
         self.validate = validate
+        if cache_dimension_scope not in {"root_only", "all"}:
+            raise ValueError(
+                "cache_dimension_scope must be either 'root_only' or 'all'."
+            )
+        self.cache_dimension_scope = cache_dimension_scope
 
         # Internal state
         self._can_save = hasattr(self.cache, "save_script")
@@ -188,6 +201,7 @@ class Runtime:
         self._lock = threading.Lock()
         self._registry: WeakValueDictionary["Node", "Node"] = WeakValueDictionary()
         self._results: dict[int, Any] = {}
+        self._run_root: Node | None = None
 
         # Reporter
         if reporter is None:
@@ -223,6 +237,8 @@ class Runtime:
             # First check _results (for just-computed nodes), then cache
             if v._hash in self._results:
                 return self._results[v._hash]
+            if not self._cache_enabled_for(v):
+                return None
             hit, val = self.cache.get(_cache_fn_name(v), v._hash)
             return val if hit else None
         elif isinstance(v, dict):
@@ -241,6 +257,30 @@ class Runtime:
                 return out.reshape(v.shape)
             return v
         return v
+
+    @staticmethod
+    def _is_dimension_result_node(node: "Node") -> bool:
+        """Return whether node evaluates to a DimensionedResult."""
+        return bool(node.dims)
+
+    def _cache_enabled_for(self, node: "Node") -> bool:
+        """Return whether cache read/write is enabled for this node."""
+        if not node.cache:
+            return False
+        if (
+            self.cache_dimension_scope == "root_only"
+            and self._is_dimension_result_node(node)
+        ):
+            return self._run_root is node
+        return True
+
+    def _build_graph_cache_filter(self, node: "Node", is_root: bool) -> bool:
+        """Control cache pruning eligibility during graph construction."""
+        if self.cache_dimension_scope == "root_only" and self._is_dimension_result_node(
+            node
+        ):
+            return is_root
+        return True
 
     def _fail_node(
         self, n: Node, start: float, sem: threading.Semaphore | None
@@ -278,7 +318,7 @@ class Runtime:
         with self._lock:
             self._exec_count += 1
         
-        if node.cache:
+        if self._cache_enabled_for(node):
             self._set_node_state(node, "cache_writing")
             self.cache.put(_cache_fn_name(node), node._hash, val)
             if self._can_save:
@@ -293,7 +333,7 @@ class Runtime:
         for dep in node._exec_deps:
             if dep._hash in self._results:
                 continue
-            if dep.cache:
+            if self._cache_enabled_for(dep):
                 dep_hit, dep_val = self.cache.get(_cache_fn_name(dep), dep._hash)
                 if dep_hit:
                     self._results[dep._hash] = dep_val
@@ -312,9 +352,12 @@ class Runtime:
             return None
         if self.on_node_start is not None:
             self.on_node_start(n)
-        if n.cache:
+        cache_enabled = self._cache_enabled_for(n)
+        if cache_enabled:
             self._set_node_state(n, "cache_reading")
-        hit, val = self.cache.get(_cache_fn_name(n), n._hash) if n.cache else (False, None)
+        hit, val = (
+            self.cache.get(_cache_fn_name(n), n._hash) if cache_enabled else (False, None)
+        )
         if hit:
             dur = time.perf_counter() - start
             self._results[n._hash] = val
@@ -360,7 +403,7 @@ class Runtime:
                     val = val_array.item()
 
                 self._results[n._hash] = val
-                if n.cache:
+                if cache_enabled:
                     self._set_node_state(n, "cache_writing")
                     self.cache.put(_cache_fn_name(n), n._hash, val)
                     if self._can_save:
@@ -402,21 +445,29 @@ class Runtime:
         ctx = parallel_context(self.workers) if self.limit_inner_parallelism else nullcontext()
         
         with ctx:
-            if reporter is None:
-                return self._run_internal(root, cache_root=cache_root)
-            graph = build_graph(root, self.cache)
+            self._run_root = root
             try:
-                attach_sig = inspect.signature(reporter.attach)
-                supports_order = "order" in attach_sig.parameters
-            except (TypeError, ValueError):
-                supports_order = False
-            attach_ctx = (
-                reporter.attach(self, root, order=graph[0])
-                if supports_order
-                else reporter.attach(self, root)
-            )
-            with attach_ctx:
-                return self._run_internal(root, cache_root=cache_root, _graph=graph)
+                if reporter is None:
+                    return self._run_internal(root, cache_root=cache_root)
+                graph = build_graph(
+                    root,
+                    self.cache,
+                    cache_filter=self._build_graph_cache_filter,
+                )
+                try:
+                    attach_sig = inspect.signature(reporter.attach)
+                    supports_order = "order" in attach_sig.parameters
+                except (TypeError, ValueError):
+                    supports_order = False
+                attach_ctx = (
+                    reporter.attach(self, root, order=graph[0])
+                    if supports_order
+                    else reporter.attach(self, root)
+                )
+                with attach_ctx:
+                    return self._run_internal(root, cache_root=cache_root, _graph=graph)
+            finally:
+                self._run_root = None
 
     def _run_internal(
         self,
@@ -431,8 +482,10 @@ class Runtime:
 
         t0 = time.perf_counter()
 
-        use_cache = cache_root and root.cache
-        hit, val = self.cache.get(_cache_fn_name(root), root._hash) if use_cache else (False, None)
+        use_cache = cache_root and self._cache_enabled_for(root)
+        hit, val = (
+            self.cache.get(_cache_fn_name(root), root._hash) if use_cache else (False, None)
+        )
 
         if hit:
             self._results[root._hash] = val
@@ -446,7 +499,11 @@ class Runtime:
             return val
 
         if _graph is None:
-            order, edges = build_graph(root, self.cache)
+            order, edges = build_graph(
+                root,
+                self.cache,
+                cache_filter=self._build_graph_cache_filter,
+            )
         else:
             order, edges = _graph
 
@@ -585,9 +642,14 @@ class Runtime:
                     start = time.perf_counter()
                     if self.on_node_start:
                         self.on_node_start(node)
-                    if node.cache:
+                    cache_enabled = self._cache_enabled_for(node)
+                    if cache_enabled:
                         self._set_node_state(node, "cache_reading")
-                    hit, val = self.cache.get(_cache_fn_name(node), node._hash) if node.cache else (False, None)
+                    hit, val = (
+                        self.cache.get(_cache_fn_name(node), node._hash)
+                        if cache_enabled
+                        else (False, None)
+                    )
                     if hit:
                         self._results[node._hash] = val
                         if self.on_node_end:
