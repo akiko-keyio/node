@@ -115,9 +115,9 @@ except FileNotFoundError:
 
 可行的优化方向包括：
 
-- **为 Cache 增加「仅判存在」的接口**（例如 `contains(fn_name, hash_value) -> bool`），在 `build_graph` 里用该接口代替 `get(..., node._hash)[0]`，避免在构图阶段做任何反序列化。  
-- **DiskCache 实现 contains**：用 `Path.exists()` 判断文件是否存在，不 open、不 load。  
-- **ChainCache.contains**：沿链依次查各层 contains，命中则返回 True，不加载 value，不回填（或仅在需要时对上层做轻量标记）。  
+- **提供仅供调度器使用的轻量命中接口**（如 `_has_entry(fn_name, hash_value) -> bool`），在 `build_graph` 里使用该接口代替 `get(..., node._hash)[0]`，避免在构图阶段做任何反序列化。  
+- **DiskCache 实现 `_has_entry`**：用 `Path.exists()` 判断文件是否存在，不 open、不 load。  
+- **ChainCache._has_entry**：沿链依次查各层 `_has_entry`，命中则返回 True，不加载 value，不回填。  
 - 若仍保留「构图时用 get」的兼容路径，可考虑在 DiskCache 中为「只关心 hit」的调用提供可选轻量路径（例如内部 `get(exists_only=True)`），避免无条件 pickle.load。
 
 这样可以在不改变「每个节点判断一次是否缓存」的语义的前提下，把 **单次判断的成本** 从「读文件+反序列化」降为「存在性检查」，从而显著降低大规模任务下 DFS 遍历 + 缓存查询的总耗时。

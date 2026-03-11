@@ -3,7 +3,9 @@ from node.core import build_graph
 import node
 
 
-def test_build_graph_uses_contains_not_get(tmp_path, monkeypatch, runtime_factory):
+def test_build_graph_uses_lightweight_hit_check_not_get(
+    tmp_path, monkeypatch, runtime_factory
+):
     """构图阶段只判断命中，不应触发磁盘反序列化。"""
     mem = MemoryLRU()
     disk = DiskCache(tmp_path)
@@ -28,7 +30,7 @@ def test_build_graph_uses_contains_not_get(tmp_path, monkeypatch, runtime_factor
 
 
 def test_corrupt_cached_hit_recovers_with_dependencies(tmp_path, runtime_factory):
-    """contains 命中但缓存损坏时，执行阶段应自动回退重算依赖。"""
+    """轻量命中检查命中但缓存损坏时，执行阶段应自动回退重算依赖。"""
     calls: list[str] = []
     disk = DiskCache(tmp_path)
     rt = runtime_factory(cache=ChainCache([MemoryLRU(), disk]))
@@ -44,10 +46,12 @@ def test_corrupt_cached_hit_recovers_with_dependencies(tmp_path, runtime_factory
         return y * 2
 
     root = twice(base(3))
-    # 仅写入一个损坏的 root 缓存文件：contains=True，但 get 会失败并触发删除。
+    # 仅写入一个损坏的 root 缓存文件：命中检查为 True，但 get 会失败并触发删除。
     corrupt_path = disk._path(root.fn.__name__, root._hash)
     corrupt_path.parent.mkdir(parents=True, exist_ok=True)
     corrupt_path.write_bytes(b"corrupt")
 
     assert rt.run(root) == 8
     assert calls == ["base", "twice"]
+
+

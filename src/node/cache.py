@@ -27,8 +27,8 @@ __all__ = [
 class Cache:
     """Base cache interface."""
 
-    def contains(self, fn_name: str, hash_value: int) -> bool:
-        """Check whether a cached value exists without loading it."""
+    def _has_entry(self, fn_name: str, hash_value: int) -> bool:
+        """Internal lightweight cache-hit check used by graph pruning."""
         hit, _ = self.get(fn_name, hash_value)
         return hit
 
@@ -120,7 +120,7 @@ class DiskCache(Cache):
         """
         return (self.root / fn_name) / (f"{hash_value:x}" + ext)
 
-    def contains(self, fn_name: str, hash_value: int) -> bool:
+    def _has_entry(self, fn_name: str, hash_value: int) -> bool:
         p = self._path(fn_name, hash_value)
         try:
             return p.exists()
@@ -213,11 +213,11 @@ class ChainCache(Cache):
                     return True, val
         return False, None
 
-    def contains(self, fn_name: str, hash_value: int) -> bool:
+    def _has_entry(self, fn_name: str, hash_value: int) -> bool:
         if not self.caches:
             return False
         for c in self.caches:
-            if c.contains(fn_name, hash_value):
+            if c._has_entry(fn_name, hash_value):
                 return True
         return False
 
