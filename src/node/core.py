@@ -7,7 +7,6 @@ from typing import Any, TYPE_CHECKING
 import functools
 import inspect
 import warnings
-from graphlib import TopologicalSorter
 
 from pydantic import validate_call
 
@@ -149,10 +148,6 @@ class Node:
             self.dims, self.coords, self._items = _broadcast(
                 fn, inputs, vector_inputs, cache, target_dims=output_dims
             )
-            
-            # If the result is a Single Node (Scalar), adopt its wired inputs
-            if not self.dims:
-                self.inputs = self._items.item().inputs
 
         elif not dims and vector_inputs:
             # Default: Automatic Broadcasting (Map) over ALL dims
@@ -329,11 +324,7 @@ def _collect_nodes(v):
 # Late imports
 from .dimension import dimension, broadcast as _broadcast
 from .hashing import compute_node_identity, _canonical
-
-
-def _cache_fn_name(node: "Node") -> str:
-    """Return cache namespace for a node."""
-    return f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
+from .cache_namespace import cache_namespace
 
 
 def build_graph(
@@ -350,7 +341,6 @@ def build_graph(
     ``cache_filter`` can be used to selectively disable cache lookup for
     specific nodes during graph pruning.
     """
-    
     edges: dict["Node", list["Node"]] = {}
     order: list["Node"] = []
     seen: set["Node"] = set()
@@ -372,7 +362,7 @@ def build_graph(
             cache is not None
             and node.cache
             and (cache_filter(node, node is root) if cache_filter is not None else True)
-            and cache._has_entry(_cache_fn_name(node), node._hash)
+            and cache._has_entry(cache_namespace(node), node._hash)
         )
         if hit:
             edges[node] = []

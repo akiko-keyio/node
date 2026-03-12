@@ -192,3 +192,36 @@ def test_repr_comprehensive():
     assert "# hash =" in r_res0
     # The magical inlining!
     assert "process_0 = process(t=2020)" in r_res0
+
+
+@pytest.mark.unit
+def test_repr_reduce_all_concise():
+    """reduce_dims='all' should show the high-level vector node, not expanded children."""
+    @dimension(name="time")
+    def time_gen():
+        return [2020, 2021, 2022]
+
+    @define()
+    def load(t):
+        return t * 10
+
+    @define(reduce_dims="all")
+    def summary(data):
+        return sum(data.flat)
+
+    times = time_gen()
+    data = load(t=times)
+    agg = summary(data=data)
+
+    r = repr(agg)
+    lines = r.strip().splitlines()
+
+    # Should show high-level logical structure, not individual load calls
+    assert any("time_gen" in line for line in lines)
+    assert any("load" in line and "# dims=(time:3)" in line for line in lines)
+    assert any("summary" in line and "data=load_0" in line for line in lines)
+
+    # Should NOT contain expanded scalar calls like load(t=2020)
+    assert "t=2020" not in r
+    assert "t=2021" not in r
+    assert "t=2022" not in r
