@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 import itertools
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, cast
@@ -105,13 +104,19 @@ class Config:
         mod = __import__(mod_name, fromlist=[attr])
         return getattr(mod, attr)
 
-    def _resolve_value(self, val: Any, runtime: Any) -> Any:
+    def _resolve_value(
+        self,
+        val: Any,
+        runtime: Any,
+        *,
+        memo: dict[tuple[int, str], "Node"] | None = None,
+    ) -> Any:
         if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
             key = val[2:-1]
             if key in self._conf:
                 cfg_val = self._conf[key]
                 if OmegaConf.is_dict(cfg_val) and "_target_" in cfg_val:
-                    return self._build_node(key, runtime)
+                    return self._build_node(key, runtime, memo=memo)
             return OmegaConf.select(self._conf, key)
         return val
 
@@ -158,6 +163,24 @@ class Config:
             return raw_value[2:-1]
         return None
 
+    @staticmethod
+    def _shallow_clone_along_paths(
+        params: dict[str, Any],
+        paths: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Shallow-copy only the dict nodes along each sweep mutation path."""
+        cloned = dict(params)
+        for path in paths:
+            keys = path.split(".")
+            cur = cloned
+            for key in keys[:-1]:
+                child = cur.get(key)
+                if not isinstance(child, dict):
+                    break
+                cur[key] = child = dict(child)
+                cur = child
+        return cloned
+
     def _instantiate_with_sweep(
         self,
         *,
@@ -187,9 +210,10 @@ class Config:
             return fn(**params)
 
         sweep_shape = tuple(len(values) for _, values, _ in axis_specs)
+        sweep_paths = tuple(path for path, _, _ in axis_specs)
         item_nodes: list[Node] = []
         for combo in itertools.product(*(values for _, values, _ in axis_specs)):
-            combo_params = deepcopy(params)
+            combo_params = self._shallow_clone_along_paths(params, sweep_paths)
             for (path, _, _), value in zip(axis_specs, combo, strict=True):
                 try:
                     self._set_dotted_param(combo_params, path, value)
@@ -265,45 +289,15 @@ class Config:
                 root._exec_deps.append(dep)
         return root
 
-    def instantiate(
+    def _instantiate_impl(
         self,
         name: str,
         *,
-        runtime: Any | None = None,
-        sweep: Mapping[str, Any] | None = None,
+        runtime: Any,
+        sweep: Mapping[str, Any] | None,
+        memo: dict[tuple[int, str], "Node"],
     ) -> "Node":
-        """Instantiate a node from config section ``name``.
-
-        Parameters
-        ----------
-        name:
-            Name of the config section to instantiate.
-        runtime:
-            Runtime used to resolve nested ``${...}`` references to nodes.
-            If omitted, use the global runtime.
-        sweep:
-            Optional parameter sweep mapping. Keys are config paths (supports dot
-            notation such as ``"trop_ls.degree"``) and values are candidate
-            collections. Passing sweep returns a dimensioned node covering the
-            Cartesian product of sweep values.
-
-        Notes
-        -----
-        ``instantiate()`` binds parameters from the current config at call time.
-        The returned node will not dynamically re-read later ``node.cfg`` edits.
-        After mutating config values, call ``instantiate()`` again to build a node
-        with the updated configuration snapshot.
-        """
         from .exceptions import ConfigurationError
-
-        if runtime is None:
-            from .runtime import get_runtime
-
-            runtime = get_runtime()
-
-        if sweep is not None:
-            if not isinstance(sweep, Mapping):
-                raise ConfigurationError("sweep must be a mapping of path -> values.")
 
         if name not in self._conf:
             raise ConfigurationError(f"Config section '{name}' not found.")
@@ -374,13 +368,14 @@ class Config:
                 continue
             if k in nested_sweep_specs:
                 section_name, section_sweep = nested_sweep_specs[k]
-                params[k] = self.instantiate(
+                params[k] = self._instantiate_impl(
                     section_name,
                     runtime=runtime,
                     sweep=section_sweep,
+                    memo=memo,
                 )
             else:
-                params[k] = self._resolve_value(v, runtime)
+                params[k] = self._resolve_value(v, runtime, memo=memo)
         return (
             self._instantiate_with_sweep(
                 name=name,
@@ -392,24 +387,93 @@ class Config:
             else fn(**params)
         )
 
-    def _build_node(self, name: str, runtime: Any) -> "Node":
-        return self.instantiate(name, runtime=runtime)
+    def instantiate(
+        self,
+        name: str,
+        *,
+        runtime: Any | None = None,
+        sweep: Mapping[str, Any] | None = None,
+    ) -> "Node":
+        """Instantiate a node from config section ``name``.
 
-    def defaults(self, fn_name: str, *, runtime: Any | None = None) -> dict[str, Any]:
+        Parameters
+        ----------
+        name:
+            Name of the config section to instantiate.
+        runtime:
+            Runtime used to resolve nested ``${...}`` references to nodes.
+            If omitted, use the global runtime.
+        sweep:
+            Optional parameter sweep mapping. Keys are config paths (supports dot
+            notation such as ``"trop_ls.degree"``) and values are candidate
+            collections. Passing sweep returns a dimensioned node covering the
+            Cartesian product of sweep values.
+
+        Notes
+        -----
+        ``instantiate()`` binds parameters from the current config at call time.
+        The returned node will not dynamically re-read later ``node.cfg`` edits.
+        After mutating config values, call ``instantiate()`` again to build a node
+        with the updated configuration snapshot.
+        """
+        from .exceptions import ConfigurationError
+
+        if runtime is None:
+            from .runtime import get_runtime
+
+            runtime = get_runtime()
+
+        if sweep is not None:
+            if not isinstance(sweep, Mapping):
+                raise ConfigurationError("sweep must be a mapping of path -> values.")
+
+        return self._instantiate_impl(
+            name,
+            runtime=runtime,
+            sweep=sweep,
+            memo={},
+        )
+
+    def _build_node(
+        self,
+        name: str,
+        runtime: Any,
+        *,
+        memo: dict[tuple[int, str], "Node"] | None = None,
+    ) -> "Node":
+        if memo is None:
+            memo = {}
+        key = (id(runtime), name)
+        if key in memo:
+            return memo[key]
+        node = self._instantiate_impl(name, runtime=runtime, sweep=None, memo=memo)
+        memo[key] = node
+        return node
+
+    def defaults(
+        self,
+        fn_name: str,
+        *,
+        runtime: Any | None = None,
+        selected_names: set[str] | None = None,
+    ) -> dict[str, Any]:
         node_cfg = self._conf.get(fn_name)
         if node_cfg is None:
             return {}
-        
-        # Resolve presets if present
         node_cfg = self._resolve_with_presets(node_cfg)
-        
         if runtime is None:
             return cast(dict[str, Any], OmegaConf.to_container(node_cfg, resolve=True))
+        memo: dict[tuple[int, str], "Node"] = {}
         result: dict[str, Any] = {}
-        for k, v in OmegaConf.to_container(node_cfg, resolve=False).items():
+        raw_items = OmegaConf.to_container(node_cfg, resolve=False)
+        if not isinstance(raw_items, dict):
+            return result
+        for k, v in raw_items.items():
             if k == "_target_":
                 continue
-            result[k] = self._resolve_value(v, runtime)
+            if selected_names is not None and k not in selected_names:
+                continue
+            result[k] = self._resolve_value(v, runtime, memo=memo)
         return result
 
     def copy_from(self, other: "Config") -> None:

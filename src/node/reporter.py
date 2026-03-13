@@ -1,52 +1,49 @@
+"""Rich-based progress reporter for DAG execution."""
+
 from __future__ import annotations
+
 # coverage: ignore-file
 
-from typing import TYPE_CHECKING, Any
-from contextlib import nullcontext
-import time
 import sys
 import threading
-from queue import SimpleQueue, Empty
-from collections.abc import Iterable, Generator
-from rich.progress import (
-    Progress,
+import time
+from collections.abc import Generator, Iterable
+from contextlib import nullcontext
+from queue import Empty, SimpleQueue
+from typing import TYPE_CHECKING, Any
+
+from rich.console import Console, Group  # type: ignore[import]
+from rich.live import Live  # type: ignore[import]
+from rich.progress import (  # type: ignore[import]
     BarColumn,
+    Progress,
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-)  # type: ignore[import]
-
-from rich.live import Live  # type: ignore[import]
-from rich.console import Group, Console  # type: ignore[import]
-from rich.text import Text  # type: ignore[import]
+)
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
+from rich.text import Text  # type: ignore[import]
 
 from .core import Node, _render_call, build_graph
 from .logger import console as _console
 
-# active reporter context for track()
-_track_ctx = threading.local()
-
-IN_JUPYTER = "ipykernel" in sys.modules
-
-if TYPE_CHECKING:  # pragma: no cover - for type checking only
+if TYPE_CHECKING:
     from .runtime import Runtime
-
 
 __all__ = ["RichReporter", "track"]
 
+_track_ctx = threading.local()
+IN_JUPYTER = "ipykernel" in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 class RichReporter:
-    """Rich based progress reporter.
-
-    ``RichReporter`` hooks into :class:`~node.node.Engine` callbacks to display
-    live execution progress. A separate thread updates a status bar using the
-    :mod:`rich` library while nodes are being executed. When running inside
-    IPython or Jupyter, the output is kept within the cell; otherwise the final
-    status is printed to ``stdout``.
-    """
+    """Live progress display backed by Rich."""
 
     def __init__(
         self,
@@ -56,42 +53,53 @@ class RichReporter:
         console: Console | None = None,
         force_terminal: bool = False,
     ):
-        """Create reporter.
-
-        Parameters
-        ----------
-        refresh_per_second:
-            UI refresh rate.
-        show_script_line:
-            Display canonical script line instead of ``_render_call``.
-        force_terminal:
-            Force Rich to treat the console as a real terminal.
-        """
-
         self.refresh_per_second = refresh_per_second
         self.show_script_line = show_script_line
-        if console is None:
-            if force_terminal:
-                self.console = Console(force_terminal=True)
-            else:
-                self.console = _console
-        else:
+        if console is not None:
             self.console = console
+        elif force_terminal:
+            self.console = Console(force_terminal=True)
+        else:
+            self.console = _console
 
-    def attach(self, runtime: "Runtime", root: Node, *, order: list[Node] | None = None):
-        """Return a context manager bound to ``engine`` and ``root``.
-
-        If the console already has an active live display, a no-op context
-        manager is returned to avoid nested :class:`rich.live.Live` errors.
-        """
+    def attach(
+        self, runtime: Runtime, root: Node, *, order: list[Node] | None = None
+    ):
         if getattr(self.console, "_live", None) is not None:
             return nullcontext()
-        return _RichReporterCtx(self, runtime, root, order=order)
+        return _ReporterCtx(self, runtime, root, order=order)
 
 
-class _TaskStats:
-    def __init__(self, total: int):
-        self.total = total
+def track(
+    sequence: Iterable[Any],
+    description: str = "Working...",
+    *,
+    total: int | None = None,
+) -> Generator[Any, None, None]:
+    """Yield items from *sequence* with a progress bar.
+
+    When called inside a running node, the bar integrates with the
+    reporter display; otherwise falls back to ``rich.progress.track``.
+    """
+    ctx = getattr(_track_ctx, "ctx", None)
+    if ctx is not None:
+        yield from ctx.track(sequence, description, total)
+        return
+    from rich.progress import track as _track
+
+    yield from _track(sequence, description=description, total=total)
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+class _Stats:
+    __slots__ = ("total", "completed", "running", "first_start", "last_end",
+                 "state_counts")
+
+    def __init__(self) -> None:
+        self.total = 0
         self.completed = 0
         self.running = 0
         self.first_start: float | None = None
@@ -99,9 +107,7 @@ class _TaskStats:
         self.state_counts: dict[str, int] = {}
 
 
-class _RichReporterCtx:
-    """Context manager handling ``rich`` updates for a run."""
-
+class _ReporterCtx:
     _STATE_LABELS = {
         "cache_reading": "reading",
         "executing": "executing",
@@ -111,49 +117,225 @@ class _RichReporterCtx:
 
     def __init__(
         self,
-        reporter: RichReporter,
-        runtime: "Runtime",
+        cfg: RichReporter,
+        runtime: Runtime,
         root: Node,
         *,
         order: list[Node] | None = None,
     ):
-        self.cfg = reporter
+        self.cfg = cfg
         self.runtime = runtime
         self.root = root
-        self.order = order
+        self._order = order
         self.q: SimpleQueue = SimpleQueue()
-        
-        # Stats by function name
-        self.stats: dict[str, _TaskStats] = {}
-        # Order of appearance for function names to maintain stable sort
-        self.task_order: list[str] = []
-        
-        self.exec_start: float | None = None
-        self.exec_end: float | None = None
-        self.spinner = Spinner("dots")
-        self.current_node: str | None = None
-        
-        # Internal tracking
-        self.node_to_fn_name: dict[str, str] = {}
-        self.node_states: dict[str, str] = {}
-        self.running_nodes: set[str] = set()
-        
-        # Restore tracking attributes for track() support
-        self.tracks: dict[str, tuple[Progress, int, str]] = {}
-        self.node_track_ids: dict[str, set[str]] = {}
-        self._done_icon_char = self._pick_done_icon()
 
-    def _pick_done_icon(self) -> str:
-        """Return a completion icon supported by the active console encoding."""
-        encoding = getattr(self.cfg.console.file, "encoding", None) or "utf-8"
+        self.stats: dict[str, _Stats] = {}
+        self.task_order: list[str] = []
+
+        self.spinner = Spinner("dots")
+        self.current_node: int | None = None
+
+        self.node_fn: dict[int, str] = {}
+        self.node_states: dict[int, str] = {}
+
+        self.tracks: dict[str, tuple[Progress, int, int]] = {}
+        self.node_tracks: dict[int, set[str]] = {}
+
+        enc = getattr(cfg.console.file, "encoding", None) or "utf-8"
         try:
-            "•".encode(encoding)
+            "•".encode(enc)
+            self._done_char = "•"
         except Exception:
-            return "*"
-        return "•"
+            self._done_char = "*"
+
+    # -- State helpers --------------------------------------------------------
+
+    def _adjust_state(self, node_key: int, new_state: str | None) -> None:
+        """Transition *node_key* to *new_state* (or remove if ``None``)."""
+        fn = self.node_fn.get(node_key)
+        if fn is None:
+            return
+        st = self.stats[fn]
+        prev = self.node_states.pop(node_key, None) if new_state is None \
+            else self.node_states.get(node_key)
+
+        if prev is not None and prev != new_state:
+            n = st.state_counts.get(prev, 0) - 1
+            if n > 0:
+                st.state_counts[prev] = n
+            else:
+                st.state_counts.pop(prev, None)
+
+        if new_state is not None and new_state != prev:
+            self.node_states[node_key] = new_state
+            st.state_counts[new_state] = st.state_counts.get(new_state, 0) + 1
+
+    # -- Context manager ------------------------------------------------------
+
+    def __enter__(self):
+        self._orig = (
+            self.runtime.on_node_start,
+            self.runtime.on_node_end,
+            getattr(self.runtime, "on_node_state", None),
+            self.runtime.on_flow_end,
+        )
+        self.runtime.on_node_start = self._on_start
+        self.runtime.on_node_end = self._on_end
+        self.runtime.on_node_state = self._on_state
+        self.runtime.on_flow_end = self._on_flow
+
+        order = self._order
+        if order is None:
+            order, _ = build_graph(self.root, self.runtime.cache)
+        for node in order:
+            fn = node.fn.__name__
+            self.node_fn[node._hash] = fn
+            if fn not in self.stats:
+                self.stats[fn] = _Stats()
+                self.task_order.append(fn)
+            self.stats[fn].total += 1
+            self._adjust_state(node._hash, "waiting")
+
+        self.live = Live(
+            self._render(),
+            refresh_per_second=self.cfg.refresh_per_second,
+            transient=not IN_JUPYTER,
+            console=self.cfg.console,
+        )
+        self.live.__enter__()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self._stop.set()
+        self._thread.join()
+        self._drain()
+        final = self._render(final=True)
+        self.live.update(final, refresh=True)
+        self.live.__exit__(*exc_info)
+        if not IN_JUPYTER:
+            self.live.console.print(final)
+        (
+            self.runtime.on_node_start,
+            self.runtime.on_node_end,
+            self.runtime.on_node_state,
+            self.runtime.on_flow_end,
+        ) = self._orig
+
+    # -- Callbacks ------------------------------------------------------------
+
+    def _on_start(self, n: Node) -> None:
+        call = n.script_lines[-1][-1] if self.cfg.show_script_line \
+            else _render_call(n.fn, n.inputs)
+        label = Syntax(
+            call, "python",
+            theme="abap" if IN_JUPYTER else "ansi_dark",
+            background_color="default",
+        ).highlight(call)
+        label.rstrip()
+        self.q.put(("S", n._hash, label, time.perf_counter()))
+        _track_ctx.ctx = self
+        _track_ctx.node = n._hash
+        self.current_node = n._hash
+        if self._orig[0]:
+            self._orig[0](n)
+
+    def _on_end(self, n: Node, dur: float, cached: bool, failed: bool) -> None:
+        self.q.put(("E", n._hash, dur, cached, failed))
+        if getattr(_track_ctx, "ctx", None) is self:
+            _track_ctx.ctx = _track_ctx.node = None
+        ids = self.node_tracks.get(n._hash)
+        if ids:
+            for tid in list(ids):
+                self.q.put(("TE", tid))
+        self.current_node = None
+        if self._orig[1]:
+            self._orig[1](n, dur, cached, failed)
+
+    def _on_state(self, n: Node, state: str) -> None:
+        self.q.put(("T", n._hash, state))
+        if self._orig[2]:
+            self._orig[2](n, state)
+
+    def _on_flow(self, root: Node, wall: float, count: int, fails: int) -> None:
+        self.q.put(("F", wall))
+        if self._orig[3]:
+            self._orig[3](root, wall, count, fails)
+
+    # -- Event loop -----------------------------------------------------------
+
+    def _loop(self) -> None:
+        interval = 1.0 / self.cfg.refresh_per_second
+        while not self._stop.is_set():
+            self._drain()
+            self.live.update(self._render())
+            time.sleep(interval)
+        self._drain()
+
+    def track(
+        self, sequence: Iterable[Any], description: str, total: int | None
+    ) -> Generator[Any, None, None]:
+        tid = f"{time.perf_counter()}-{threading.get_ident()}"
+        self.q.put(("TS", tid, self.current_node or 0, description, total))
+        count = 0
+        for item in sequence:
+            yield item
+            count += 1
+            self.q.put(("TU", tid, count))
+        self.q.put(("TE", tid))
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                msg = self.q.get_nowait()
+            except Empty:
+                break
+            kind = msg[0]
+            if kind == "S":
+                _, k, _label, ts = msg
+                fn = self.node_fn.get(k)
+                if fn:
+                    st = self.stats[fn]
+                    if st.first_start is None:
+                        st.first_start = ts
+                    st.running += 1
+            elif kind == "T":
+                self._adjust_state(msg[1], msg[2])
+            elif kind == "E":
+                _, k, _dur, cached, _failed = msg
+                self._adjust_state(k, None)
+                fn = self.node_fn.get(k)
+                if fn:
+                    st = self.stats[fn]
+                    st.running = max(0, st.running - 1)
+                    if cached:
+                        st.total -= 1
+                    else:
+                        st.completed += 1
+                        st.last_end = time.perf_counter()
+            elif kind == "TS":
+                _, tid, nk, desc, tot = msg
+                prog = self._make_progress()
+                task = prog.add_task(desc, total=tot)
+                self.tracks[tid] = (prog, task, nk)
+                if nk:
+                    self.node_tracks.setdefault(nk, set()).add(tid)
+            elif kind == "TU":
+                info = self.tracks.get(msg[1])
+                if info:
+                    info[0].update(info[1], completed=msg[2])
+            elif kind == "TE":
+                info = self.tracks.pop(msg[1], None)
+                if info and info[2]:
+                    ids = self.node_tracks.get(info[2])
+                    if ids is not None:
+                        ids.discard(msg[1])
+                        if not ids:
+                            self.node_tracks.pop(info[2], None)
 
     def _make_progress(self) -> Progress:
-        """Return a progress instance configured for single-line display."""
         return Progress(
             TextColumn("{task.completed}/{task.total}"),
             TextColumn("left:{task.remaining}"),
@@ -166,386 +348,88 @@ class _RichReporterCtx:
             refresh_per_second=self.cfg.refresh_per_second,
         )
 
-    @staticmethod
-    def _format_dur(seconds: float) -> str:
-        """Return duration string with hours and minutes."""
-        if seconds >= 3600:
-            h = int(seconds // 3600)
-            m = int((seconds % 3600) // 60)
-            s = int(seconds % 60)
-            parts = [f"{h}h", f"{m}m"]
-            if s:
-                parts.append(f"{s}s")
-            return " ".join(parts)
-        if seconds >= 60:
-            m = int(seconds // 60)
-            s = int(seconds % 60)
-            return f"{m}m {s}s" if s else f"{m}m"
-        return f"{seconds:.1f} s"
-
-    @staticmethod
-    def _format_eta(seconds: float) -> str:
-        """Return ETA with only the most significant unit."""
-        if seconds >= 3600:
-            return f"{int(seconds // 3600)}h"
-        if seconds >= 60:
-            return f"{int(seconds // 60)}m"
-        return f"{int(seconds)}s"
+    # -- Rendering ------------------------------------------------------------
 
     @staticmethod
     def _estimate_remaining(
         elapsed: float, completed: int, total: int, *, threshold: float = 60.0
     ) -> float | None:
-        """Estimate remaining seconds for an in-progress task.
-
-        ETA is only shown after ``threshold`` seconds to avoid noisy estimates
-        during short runs.
-        """
         if elapsed <= threshold or completed <= 0 or total <= completed:
             return None
-        rate = completed / elapsed
-        if rate <= 0:
-            return None
-        remaining = total - completed
-        return remaining / rate
-
-    # --------------------------------------------------------------
-    def __enter__(self):
-        self.orig_start = self.runtime.on_node_start
-        self.orig_end = self.runtime.on_node_end
-        self.orig_state = getattr(self.runtime, "on_node_state", None)
-        self.orig_flow = self.runtime.on_flow_end
-        self.runtime.on_node_start = self._start
-        self.runtime.on_node_end = self._end
-        self.runtime.on_node_state = self._state
-        self.runtime.on_flow_end = self._flow
-        
-        # Pre-calculate totals by function name
-        order = self.order
-        if order is None:
-            order, _ = build_graph(self.root, self.runtime.cache)
-        for node in order:
-            fn_name = node.fn.__name__
-            self.node_to_fn_name[node._hash] = fn_name
-            if fn_name not in self.stats:
-                self.stats[fn_name] = _TaskStats(0)
-                self.task_order.append(fn_name)
-            self.stats[fn_name].total += 1
-            self._set_local_state(node._hash, "waiting")
-
-        self.live = Live(
-            self._render(),
-            refresh_per_second=self.cfg.refresh_per_second,
-            transient=not IN_JUPYTER,
-            console=self.cfg.console,
-        )
-        self.live.__enter__()
-        self._stop = threading.Event()
-        self.t = threading.Thread(target=self._loop, daemon=True)
-        self.t.start()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self._stop.set()
-        self.t.join()
-        self._drain()
-        final_render = self._render(final=True)
-        self.live.update(final_render, refresh=True)
-        self.live.__exit__(exc_type, exc, tb)
-        if not IN_JUPYTER:
-            self.live.console.print(final_render)
-        self.runtime.on_node_start = self.orig_start
-        self.runtime.on_node_end = self.orig_end
-        self.runtime.on_node_state = self.orig_state
-        self.runtime.on_flow_end = self.orig_flow
-
-    # --------------------------------------------------------------
-    def _start(self, n: Node) -> None:
-        if self.cfg.show_script_line:
-            call = n.script_lines[-1][-1]
-        else:
-            call = _render_call(n.fn, n.inputs)
-
-        label = Syntax(
-            call,
-            "python",
-            theme="abap" if IN_JUPYTER else "ansi_dark",
-            background_color="default",
-        ).highlight(call)
-        label.rstrip()
-        self.q.put(("start", n._hash, label, time.perf_counter()))
-        _track_ctx.ctx = self
-        _track_ctx.node = n._hash
-        self.current_node = n._hash
-
-        if self.orig_start:
-            self.orig_start(n)
-
-    def _end(self, n: Node, dur: float, cached: bool, failed: bool) -> None:
-        self.q.put(("end", n._hash, dur, cached, failed))
-        if getattr(_track_ctx, "ctx", None) is self:
-            _track_ctx.ctx = None
-            _track_ctx.node = None
-        ids = self.node_track_ids.get(n._hash)
-        if ids:
-            for tid in list(ids):
-                self.q.put(("track_end", tid))
-        self.current_node = None
-        if self.orig_end:
-            self.orig_end(n, dur, cached, failed)
-
-    def _state(self, n: Node, state: str) -> None:
-        self.q.put(("state", n._hash, state))
-        if self.orig_state:
-            self.orig_state(n, state)
-
-    def _flow(self, root: Node, wall: float, count: int, fails: int) -> None:
-        self.q.put(("flow", wall))
-        if self.orig_flow:
-            self.orig_flow(root, wall, count, fails)
-
-    # --------------------------------------------------------------
-    def _loop(self) -> None:
-        sleep = 1.0 / self.cfg.refresh_per_second
-        while not self._stop.is_set():
-            self._drain()
-            self.live.update(self._render())
-            time.sleep(sleep)
-        self._drain()
-
-    def track(
-        self, sequence: Iterable[Any], description: str, total: int | None
-    ) -> Generator[Any, None, None]:
-        tid = f"{time.perf_counter()}-{threading.get_ident()}"
-        self.q.put(("track_start", tid, self.current_node or "", description, total))
-        count = 0
-        for item in sequence:
-            yield item
-            count += 1
-            self.q.put(("track_update", tid, count))
-        self.q.put(("track_end", tid))
-
-    def _drain(self) -> None:
-        while True:
-            try:
-                typ, *rest = self.q.get_nowait()
-            except Empty:
-                break
-            
-            if typ == "start":
-                k, label, ts = rest
-                fn_name = self.node_to_fn_name.get(k)
-                if fn_name:
-                    stats = self.stats[fn_name]
-                    if stats.first_start is None:
-                        stats.first_start = ts
-                    stats.running += 1
-                self.running_nodes.add(k)
-
-            elif typ == "state":
-                k, state = rest
-                self._set_local_state(k, state)
-
-            elif typ == "end":
-                k, dur, cached, failed = rest
-                if k in self.running_nodes:
-                    self.running_nodes.remove(k)
-                self._clear_local_state(k)
-                
-                fn_name = self.node_to_fn_name.get(k)
-                if fn_name:
-                    stats = self.stats[fn_name]
-                    
-                    # Always decrement running on end
-                    stats.running -= 1
-                    if stats.running < 0:
-                        stats.running = 0
-
-                    if cached:
-                        # Cached tasks are hidden from the total count
-                        stats.total -= 1
-                    else:
-                        stats.completed += 1
-                        stats.last_end = time.perf_counter()
-
-            elif typ == "track_start":
-                tid, node_key, desc, total = rest
-                prog = self._make_progress()
-                task = prog.add_task(desc, total=total)
-                self.tracks[tid] = (prog, task, node_key)
-                if node_key:
-                    self.node_track_ids.setdefault(node_key, set()).add(tid)
-            elif typ == "track_update":
-                tid, completed = rest
-                prog, task, _ = self.tracks.get(tid, (None, None, None))
-                if prog is not None:
-                    prog.update(task, completed=completed)
-            elif typ == "track_end":
-                tid = rest[0]
-                info = self.tracks.pop(tid, None)
-                if info is not None:
-                    node_key = info[2]
-                    if node_key:
-                        ids = self.node_track_ids.get(node_key)
-                        if ids is not None:
-                            ids.discard(tid)
-                            if not ids:
-                                self.node_track_ids.pop(node_key, None)
-
-    def _set_local_state(self, node_key: str, state: str) -> None:
-        fn_name = self.node_to_fn_name.get(node_key)
-        if fn_name is None:
-            return
-        stats = self.stats[fn_name]
-        prev = self.node_states.get(node_key)
-        if prev == state:
-            return
-        if prev is not None:
-            prev_count = stats.state_counts.get(prev, 0) - 1
-            if prev_count > 0:
-                stats.state_counts[prev] = prev_count
-            else:
-                stats.state_counts.pop(prev, None)
-        self.node_states[node_key] = state
-        stats.state_counts[state] = stats.state_counts.get(state, 0) + 1
-
-    def _clear_local_state(self, node_key: str) -> None:
-        fn_name = self.node_to_fn_name.get(node_key)
-        prev = self.node_states.pop(node_key, None)
-        if fn_name is None or prev is None:
-            return
-        stats = self.stats[fn_name]
-        prev_count = stats.state_counts.get(prev, 0) - 1
-        if prev_count > 0:
-            stats.state_counts[prev] = prev_count
-        else:
-            stats.state_counts.pop(prev, None)
-
-    def _format_state_summary(self, stats: _TaskStats) -> str | None:
-        parts = []
-        for state in self._STATE_ORDER:
-            count = stats.state_counts.get(state, 0)
-            if count <= 0:
-                continue
-            label = self._STATE_LABELS.get(state, state.replace("_", " "))
-            parts.append(label if count == 1 else f"{label} x{count}")
-        return ", ".join(parts) if parts else None
+        return (total - completed) / (completed / elapsed)
 
     @staticmethod
-    def _is_waiting_only(stats: _TaskStats) -> bool:
-        waiting = stats.state_counts.get("waiting", 0)
-        if waiting <= 0:
-            return False
-        return all(
-            state == "waiting" or count <= 0
-            for state, count in stats.state_counts.items()
-        )
+    def _fmt_dur(s: float) -> str:
+        if s >= 3600:
+            h, rem = divmod(int(s), 3600)
+            m, sec = divmod(rem, 60)
+            return f"{h}h {m}m" + (f" {sec}s" if sec else "")
+        if s >= 60:
+            m, sec = divmod(int(s), 60)
+            return f"{m}m {sec}s" if sec else f"{m}m"
+        return f"{s:.1f} s"
 
+    @staticmethod
+    def _fmt_eta(s: float) -> str:
+        if s >= 3600:
+            return f"{int(s // 3600)}h"
+        if s >= 60:
+            return f"{int(s // 60)}m"
+        return f"{int(s)}s"
 
-    # --------------------------------------------------------------
     def _render(self, final: bool = False) -> Group:
-        lines = []
         now = time.perf_counter()
-        # Use orange1 for running spinner
-        spinner = self.spinner.render(now)
-        spinner.style = "orange1"
-        
-        for fn_name in self.task_order:
-            stats = self.stats[fn_name]
-            
-            # Skip if no tasks to show (all cached or empty)
-            if stats.total <= 0:
+        spin = self.spinner.render(now)
+        spin.style = "orange1"
+        lines: list[Text] = []
+
+        for fn in self.task_order:
+            st = self.stats[fn]
+            if st.total <= 0:
                 continue
-            
-            is_done = stats.completed >= stats.total and stats.running == 0
-            
-            # Calculate Duration
-            duration = 0.0
-            if stats.first_start is not None:
-                if is_done and stats.last_end is not None:
-                    duration = stats.last_end - stats.first_start
-                else:
-                    duration = now - stats.first_start
-            
-            if is_done:
-                # Done: Blue style
-                # • 12 Task1 Name [12.2 s]
-                icon = Text(self._done_icon_char, style="blue")
-                count_text = f"{stats.total}"
-                dur_str = f"[{self._format_dur(duration)}]"
-                
-                # Function name: default color (no style), not bold
-                # Others: blue
-                parts = [
-                    icon,
-                    Text(" "),
-                    Text(f"{count_text}", style="blue"),
-                    Text(" "),
-                    Text(f"{fn_name}"), # Default style
-                    Text(" "),
-                    Text(dur_str, style="blue")
-                ]
-            elif self._is_waiting_only(stats):
-                # Waiting-only: compact line without spinner or state text.
-                # ~ 0/7 task_name
-                count_text = f"{stats.completed}/{stats.total}"
-                parts = [
-                    Text("~"),
-                    Text(" "),
-                    Text(f"{count_text}"),
-                    Text(" "),
-                    Text(f"{fn_name}"),
-                ]
+
+            done = st.completed >= st.total and st.running == 0
+            dur = 0.0
+            if st.first_start is not None:
+                dur = (st.last_end if done and st.last_end else now) - st.first_start
+
+            if done:
+                lines.append(Text.assemble(
+                    (self._done_char, "blue"), " ",
+                    (str(st.total), "blue"), " ", fn, " ",
+                    (f"[{self._fmt_dur(dur)}]", "blue"),
+                ))
+            elif all(
+                s == "waiting" or c <= 0
+                for s, c in st.state_counts.items()
+            ) and st.state_counts.get("waiting", 0) > 0:
+                lines.append(Text.assemble(
+                    "~ ", f"{st.completed}/{st.total} ", fn,
+                ))
             else:
-                # Running: Orange style
-                # ⠋ 2/7 Task3 Name [1.9 s | ETA 5.7 s]
-                icon = spinner
-                count_text = f"{stats.completed}/{stats.total}"
-                state_summary = self._format_state_summary(stats)
-                eta = self._estimate_remaining(duration, stats.completed, stats.total)
-                if eta is not None:
-                    dur_str = f"[{self._format_dur(duration)} | ETA {self._format_eta(eta)}]"
-                else:
-                    dur_str = f"[{self._format_dur(duration)}]"
-                
-                # Function name: default color (no style), not bold
-                # Others: orange1
-                # Time: bold orange1
-                parts = [
-                    icon,
-                    Text(" "),
-                    Text(f"{count_text}", style="orange1"),
-                    Text(" "),
-                    Text(f"{fn_name}"), # Default style
+                parts: list[str | Text | tuple[str, str]] = [
+                    spin, " ",
+                    (f"{st.completed}/{st.total}", "orange1"), " ", fn,
                 ]
-                if state_summary is not None:
-                    parts.extend(
-                        [
-                            Text(" "),
-                            Text(f"({state_summary})", style="orange1"),
-                        ]
-                    )
-                parts.extend(
-                    [
-                        Text(" "),
-                        Text(dur_str, style="bold orange1"),
-                    ]
+                summary = self._state_summary(st)
+                if summary:
+                    parts += [" ", (f"({summary})", "orange1")]
+                eta = self._estimate_remaining(dur, st.completed, st.total)
+                time_str = (
+                    f"[{self._fmt_dur(dur)} | ETA {self._fmt_eta(eta)}]"
+                    if eta else f"[{self._fmt_dur(dur)}]"
                 )
-            
-            lines.append(Text.assemble(*parts))
-            
+                parts += [" ", (time_str, "bold orange1")]
+                lines.append(Text.assemble(*parts))
+
         return Group(*lines)
 
-
-def track(
-    sequence: Iterable[Any],
-    description: str = "Working...",
-    *,
-    total: int | None = None,
-) -> Generator[Any, None, None]:
-    ctx = getattr(_track_ctx, "ctx", None)
-    if ctx is not None:
-        yield from ctx.track(sequence, description, total)
-        return
-    from rich.progress import track as _track
-    yield from _track(sequence, description=description, total=total)
+    def _state_summary(self, st: _Stats) -> str:
+        parts = []
+        for state in self._STATE_ORDER:
+            c = st.state_counts.get(state, 0)
+            if c <= 0:
+                continue
+            label = self._STATE_LABELS.get(state, state.replace("_", " "))
+            parts.append(label if c == 1 else f"{label} x{c}")
+        return ", ".join(parts)

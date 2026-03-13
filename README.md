@@ -287,42 +287,23 @@ load_data()()  # 使用修改后的值
 后续如果再修改 `node.cfg`，已经返回的节点不会自动更新；需要重新调用
 `node.instantiate("xxx")` 才会使用新的配置值。
 
-`instantiate` 也支持一次性参数扫描：
+`instantiate` 也支持参数扫描（笛卡尔积）：
 
 ```python
 grid = node.instantiate(
-    "trop_eval",
+    "train",
     sweep={
-        "trop_ls.basis": ["ahsh", "poly"],
-        "trop_ls.degree": range(1, 4),
+        "optimizer": ["adam", "sgd"],
+        "lr": [0.01, 0.001, 0.0001],
     },
 )
-result = grid()  # 结果包含 sweep_* 维度
+result = grid()  # shape=(2, 3), dims=("sweep_optimizer", "sweep_lr")
 ```
 
-**什么时候用 `sweep`**
-
-- 当 `dim_hours` 这类业务维度已经在项目中稳定存在时，继续使用显式
-  `@node.dimension()` 定义。
-- 当 `basis`、`degree` 这类只在某次实验中临时扫描的参数需要做笛卡尔积
-  组合时，优先使用 `sweep`，不必额外定义 `dim_basis`、`dim_degree` 节点。
-- `sweep` 适合超参数扫描、消融实验、多模型对比等“实验维度”；不建议替代
-  长期存在的业务主维度定义。
-
-**`sweep` 会产出什么**
-
-- `node.instantiate(..., sweep=...)` 返回的仍然是一个普通 `Node`，因此可以
-  继续参与现有 DAG、缓存与下游广播。
-- 执行该节点后，如果存在扫描维度，会返回 `DimensionedResult`。
-- 每个扫描参数会生成一个 `sweep_*` 维度，例如：
-  - `basis` -> `sweep_basis`
-  - `trop_ls.degree` -> `sweep_degree`
-- 如果被扫描的参数来自 `${section}` 形式的子节点引用，`sweep` 会下钻到该
-  子节点配置中实例化；最终结果仍与已有业务维度（如 `dim_hours`）共同组成
-  输出维度。
-- 维度顺序由现有广播逻辑决定，因此应通过 `result.dims` 和 `result.coords`
-  读取语义，而不是假定固定轴顺序。
-
+sweep 适合超参数扫描、消融实验等临时实验维度；长期存在的业务维度建议用
+@node.dimension() 定义。返回值仍然是普通 Node，可继续参与 DAG、缓存与
+下游广播。每个扫描参数生成一个 sweep_* 维度，如果被扫描的参数来自
+\ 引用，sweep 会下钻到子节点配置中实例化。
 
 **变量引用**
 

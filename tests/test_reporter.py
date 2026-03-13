@@ -1,7 +1,7 @@
 """Tests for RichReporter functionality."""
 
 import node
-from node.reporter import RichReporter, _RichReporterCtx
+from node.reporter import RichReporter, _ReporterCtx
 
 
 def _make_ctx():
@@ -21,26 +21,26 @@ def _make_ctx():
 def test_format_duration():
     """Test _format_dur method formatting."""
     # _format_dur is a static method
-    assert _RichReporterCtx._format_dur(5) == "5.0 s"
-    assert _RichReporterCtx._format_dur(65) == "1m 5s"
-    assert _RichReporterCtx._format_dur(3661) == "1h 1m 1s"
+    assert _ReporterCtx._fmt_dur(5) == "5.0 s"
+    assert _ReporterCtx._fmt_dur(65) == "1m 5s"
+    assert _ReporterCtx._fmt_dur(3661) == "1h 1m 1s"
 
 
 def test_format_eta_keeps_only_most_significant_unit():
     """ETA should only show the most significant unit."""
-    assert _RichReporterCtx._format_eta(8 * 3600 + 12 * 60 + 39) == "8h"
-    assert _RichReporterCtx._format_eta(6 * 60 + 1) == "6m"
-    assert _RichReporterCtx._format_eta(9.8) == "9s"
+    assert _ReporterCtx._fmt_eta(8 * 3600 + 12 * 60 + 39) == "8h"
+    assert _ReporterCtx._fmt_eta(6 * 60 + 1) == "6m"
+    assert _ReporterCtx._fmt_eta(9.8) == "9s"
 
 
 def test_estimate_remaining_only_after_one_minute():
     """ETA should be hidden for short elapsed times."""
-    assert _RichReporterCtx._estimate_remaining(59.9, 3, 10) is None
+    assert _ReporterCtx._estimate_remaining(59.9, 3, 10) is None
 
 
 def test_estimate_remaining_returns_seconds():
     """ETA should be computed once elapsed exceeds threshold."""
-    eta = _RichReporterCtx._estimate_remaining(120, 3, 9)
+    eta = _ReporterCtx._estimate_remaining(120, 3, 9)
     assert eta is not None
     assert eta == 240
 
@@ -49,7 +49,7 @@ def test_start_uses_syntax():
     """Test that _start creates proper label using Syntax."""
     ctx = _make_ctx()
     ctx.__enter__()
-    ctx._start(ctx.root)
+    ctx._on_start(ctx.root)
     ctx._drain()
     
     # Check that stats were updated
@@ -68,15 +68,15 @@ def test_state_tracking_updates_counts():
     fn_name = ctx.root.fn.__name__
     assert ctx.stats[fn_name].state_counts == {"waiting": 1}
 
-    ctx._state(ctx.root, "cache_reading")
+    ctx._on_state(ctx.root, "cache_reading")
     ctx._drain()
     assert ctx.stats[fn_name].state_counts == {"cache_reading": 1}
 
-    ctx._state(ctx.root, "executing")
+    ctx._on_state(ctx.root, "executing")
     ctx._drain()
     assert ctx.stats[fn_name].state_counts == {"executing": 1}
 
-    ctx._end(ctx.root, 0.1, False, False)
+    ctx._on_end(ctx.root, 0.1, False, False)
     ctx._drain()
     assert ctx.stats[fn_name].state_counts == {}
 
@@ -100,5 +100,5 @@ def test_waiting_only_row_uses_compact_format():
 
 def test_state_labels_use_reading_writing_names():
     """State labels should use short reading/writing names."""
-    assert _RichReporterCtx._STATE_LABELS["cache_reading"] == "reading"
-    assert _RichReporterCtx._STATE_LABELS["cache_writing"] == "writing"
+    assert _ReporterCtx._STATE_LABELS["cache_reading"] == "reading"
+    assert _ReporterCtx._STATE_LABELS["cache_writing"] == "writing"
