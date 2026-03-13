@@ -202,6 +202,25 @@ node.cfg.load_data.path = "custom.csv"
 load_data()()  # 使用修改后的值
 ```
 
+**`instantiate()` 绑定语义**
+
+`node.instantiate("xxx")` 会在调用时读取当前配置并构建节点。
+该节点不会在后续 `node.cfg` 修改后自动重绑定；如果希望使用新配置，
+需要重新调用一次 `node.instantiate("xxx")`。
+
+也可通过 `sweep` 做一次性参数扫描：
+
+```python
+grid = node.instantiate(
+    "trop_eval",
+    sweep={
+        "trop_ls.basis": ["ahsh", "poly"],
+        "trop_ls.degree": range(1, 4),
+    },
+)
+out = grid()
+```
+
 **变量引用**
 
 ```yaml
