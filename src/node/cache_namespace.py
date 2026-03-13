@@ -10,4 +10,4 @@ if TYPE_CHECKING:
 
 def cache_namespace(node: "Node") -> str:
     """Return cache namespace for a node."""
-    return f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
+    return node.fn.__name__

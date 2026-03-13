@@ -225,3 +225,21 @@ def test_repr_reduce_all_concise():
     assert "t=2020" not in r
     assert "t=2021" not in r
     assert "t=2022" not in r
+
+
+@pytest.mark.unit
+def test_reduce_dims_accepts_single_dimension_string():
+    @dimension(name="time")
+    def time_gen():
+        return [1, 2, 3]
+
+    @define()
+    def load(t):
+        return t
+
+    @define(reduce_dims="time")
+    def summary(data):
+        return int(sum(data.flat))
+
+    out = summary(data=load(t=time_gen()))()
+    assert out == 6

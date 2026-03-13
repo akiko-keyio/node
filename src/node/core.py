@@ -133,8 +133,11 @@ class Node:
                 reduce_set = all_input_dims
                 reduce_order = ordered_input_dims
             else:
-                reduce_set = set(reduce_dims)
-                reduce_order = tuple(reduce_dims)
+                normalized_reduce_dims = (
+                    (reduce_dims,) if isinstance(reduce_dims, str) else tuple(reduce_dims)
+                )
+                reduce_set = set(normalized_reduce_dims)
+                reduce_order = normalized_reduce_dims
                 # Validate: reduce_dims must be subset of input dims
                 invalid = reduce_set - all_input_dims
                 if invalid:

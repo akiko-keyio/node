@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 from cachetools import LRUCache  # type: ignore[import]
 from filelock import FileLock  # type: ignore[import]
 
+from .cache_namespace import cache_namespace
 from .logger import logger
 
 if TYPE_CHECKING:
@@ -69,11 +70,10 @@ class Cache:
 
 
 class MemoryLRU(Cache):
-    """Thread-safe in-memory LRU cache."""
+    """In-memory LRU cache."""
 
     def __init__(self, maxsize: int = 512):
         self._lru: LRUCache[int, Any] = LRUCache(maxsize=maxsize)
-        self._lock = threading.Lock()
 
     def get(self, fn_name: str, hash_value: int):
         try:
@@ -91,8 +91,7 @@ class MemoryLRU(Cache):
 class DiskCache(Cache):
     """Filesystem cache using pickle.
 
-    Results are stored under ``<func>/<hash>.pkl`` and dimension aggregate
-    results are stored under ``<func>/dim/<hash>.pkl``. The corresponding script
+    Results are stored under ``<func>/<hash>.pkl``. The corresponding script
     is written alongside each entry as ``.py`` for inspection.
 
     Cache payloads are serialized with ``pickle`` and stored as ``.pkl`` files.
@@ -106,6 +105,8 @@ class DiskCache(Cache):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.lock = lock
+        self._index: dict[str, set[int]] = {}
+        self._index_lock = threading.Lock()
 
     def _path(self, fn_name: str, hash_value: int, ext: str = ".pkl") -> Path:
         """Return the cache file path.
@@ -120,12 +121,44 @@ class DiskCache(Cache):
         """
         return (self.root / fn_name) / (f"{hash_value:x}" + ext)
 
+    @staticmethod
+    def _normalize_namespace(fn_name: str) -> str:
+        return fn_name.replace("\\", "/")
+
+    def _load_namespace_index(self, fn_name: str) -> set[int]:
+        ns = self._normalize_namespace(fn_name)
+        with self._index_lock:
+            cached = self._index.get(ns)
+            if cached is not None:
+                return cached
+
+            entries: set[int] = set()
+            namespace_dir = self.root / ns
+            try:
+                for path in namespace_dir.glob("*.pkl"):
+                    try:
+                        entries.add(int(path.stem, 16))
+                    except ValueError:
+                        continue
+            except OSError:
+                entries = set()
+            self._index[ns] = entries
+            return entries
+
+    def _index_add(self, fn_name: str, hash_value: int) -> None:
+        ns = self._normalize_namespace(fn_name)
+        with self._index_lock:
+            if ns in self._index:
+                self._index[ns].add(hash_value)
+
+    def _index_discard(self, fn_name: str, hash_value: int) -> None:
+        ns = self._normalize_namespace(fn_name)
+        with self._index_lock:
+            if ns in self._index:
+                self._index[ns].discard(hash_value)
+
     def _has_entry(self, fn_name: str, hash_value: int) -> bool:
-        p = self._path(fn_name, hash_value)
-        try:
-            return p.exists()
-        except OSError:
-            return False
+        return hash_value in self._load_namespace_index(fn_name)
 
     def get(self, fn_name: str, hash_value: int):
         p = self._path(fn_name, hash_value)
@@ -154,6 +187,13 @@ class DiskCache(Cache):
             path.unlink()
         with suppress(OSError):
             path.with_suffix(".py").unlink()
+        try:
+            self._index_discard(
+                self._normalize_namespace(str(path.parent.relative_to(self.root))),
+                int(path.stem, 16),
+            )
+        except (ValueError, OSError):
+            pass
         return False, None
 
     def put(self, fn_name: str, hash_value: int, value: Any):
@@ -164,6 +204,7 @@ class DiskCache(Cache):
         with ctx:
             with p.open("wb") as fh:
                 pickle.dump(value, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        self._index_add(fn_name, hash_value)
 
     def delete(self, fn_name: str, hash_value: int) -> None:
         for ext in (".pkl", ".py"):
@@ -171,10 +212,10 @@ class DiskCache(Cache):
             if p.exists():
                 with suppress(OSError):
                     p.unlink()
+        self._index_discard(fn_name, hash_value)
 
     def save_script(self, node: "Node"):
-        fn_name = f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
-        p = self._path(fn_name, node._hash, ".py")
+        p = self._path(cache_namespace(node), node._hash, ".py")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(repr(node) + "\n")
 
