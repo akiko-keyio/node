@@ -1,7 +1,5 @@
 """Tests for parallel execution mechanics."""
 
-import os
-import sys
 import threading
 import time
 
@@ -51,23 +49,6 @@ class TestParallelExecution:
         serial_estimate = num_tasks * task_sleep
         assert dur < serial_estimate * 0.6, \
             f"Expected parallel speedup, got {dur:.2f}s vs serial {serial_estimate:.2f}s"
-
-    @pytest.mark.skip(reason="Process executor has issues in test environment")
-    def test_nodes_run_concurrently_process(self, temp_cache):
-        """Verify independent nodes run concurrently in process mode."""
-        node.configure(workers=4, executor="process", cache=temp_cache)
-        
-        @node.define()
-        def get_pid_task(task_id: int):
-            time.sleep(0.3)
-            return os.getpid()
-        
-        @node.dimension()
-        def task_ids():
-            return [0, 1, 2, 3]
-        
-        pids = get_pid_task(task_id=task_ids())()
-        assert len(set(pids)) >= 1
 
     def test_workers_1_runs_serially(self, temp_cache):
         """With workers=1, no concurrent execution should happen."""

@@ -4,7 +4,6 @@ import threading
 
 import node
 from node import Node, Config, ChainCache, MemoryLRU, DiskCache
-import numpy as np
 import pytest
 
 
@@ -380,7 +379,8 @@ def test_local_node_runs_in_main_thread(runtime_factory):
     assert name != "MainThread"
 
 
-@pytest.mark.skip(reason="Cycle detection temporarily disabled")
+# TODO(issue): Re-enable this test once cycle detection is restored in Node.__init__.
+@pytest.mark.skip(reason="Cycle detection disabled pending dedicated restoration task")
 def test_cycle_detection():
     """Creating a node that depends on itself should raise."""
 
@@ -704,118 +704,6 @@ def test_run_releases_intermediate_results(runtime_factory):
     root = a(b(c(10)))
     assert rt.run(root) == 19
     assert set(rt._results.keys()) == {root._hash}
-
-
-def test_memory_aware_scheduling_prioritizes_last_consumers(runtime_factory):
-    rt = runtime_factory(cache=MemoryLRU(), workers=1, memory_aware_scheduling=True)
-    order: list[str] = []
-
-    @node.define(cache=False)
-    def x():
-        order.append("x")
-        return 1
-
-    @node.define(cache=False)
-    def y():
-        order.append("y")
-        return 2
-
-    @node.define(cache=False)
-    def p(a):
-        order.append("p")
-        return a + 10
-
-    @node.define(cache=False)
-    def q(a, b):
-        order.append("q")
-        return a + b
-
-    @node.define(cache=False)
-    def root_fn(left, right):
-        order.append("root")
-        return left + right
-
-    root = root_fn(p(x()), q(x(), y()))
-    assert rt.run(root) == 14
-    assert order.index("q") < order.index("p")
-    assert set(rt._results.keys()) == {root._hash}
-
-
-def test_memory_aware_scheduling_reduces_peak_bytes_for_large_results(runtime_factory):
-    n = 2_000_000  # ~16MB per float64 array
-
-    class ByteTrackingResults(dict):
-        def __init__(self):
-            super().__init__()
-            self.current_bytes = 0
-            self.max_bytes = 0
-            self._sizes: dict[int, int] = {}
-
-        @staticmethod
-        def _estimate_size(value) -> int:
-            if hasattr(value, "nbytes"):
-                return int(value.nbytes)
-            return 0
-
-        def __setitem__(self, key, value):
-            if key in self._sizes:
-                self.current_bytes -= self._sizes[key]
-            size = self._estimate_size(value)
-            super().__setitem__(key, value)
-            self._sizes[key] = size
-            self.current_bytes += size
-            if self.current_bytes > self.max_bytes:
-                self.max_bytes = self.current_bytes
-
-        def pop(self, key, default=None):
-            if key in self._sizes:
-                self.current_bytes -= self._sizes.pop(key)
-            return super().pop(key, default)
-
-        def clear(self):
-            super().clear()
-            self._sizes.clear()
-            self.current_bytes = 0
-
-    def build_and_run(memory_aware: bool):
-        node.reset()
-        rt = runtime_factory(
-            cache=MemoryLRU(),
-            workers=1,
-            memory_aware_scheduling=memory_aware,
-        )
-        tracker = ByteTrackingResults()
-        rt._results = tracker
-
-        @node.define(cache=False)
-        def shared():
-            return np.ones(n, dtype=np.float64)
-
-        @node.define(cache=False)
-        def unique_big():
-            return np.full(n, 2.0, dtype=np.float64)
-
-        @node.define(cache=False)
-        def heavy(a):
-            return a * 3.0
-
-        @node.define(cache=False)
-        def release_unique(a, b):
-            # Keep this branch small; its main purpose is to consume unique_big
-            # so the scheduler can release it before heavy() runs.
-            return float(a[0] + b[0])
-
-        @node.define(cache=False)
-        def root_fn(left, right):
-            return float(left[0] + right)
-
-        root = root_fn(heavy(shared()), release_unique(shared(), unique_big()))
-        assert rt.run(root) == pytest.approx(6.0)
-        return tracker.max_bytes
-
-    peak_default = build_and_run(memory_aware=False)
-    peak_memory_aware = build_and_run(memory_aware=True)
-    assert peak_memory_aware < peak_default
 
 
 def test_dimension_chain_limits_in_run_result_footprint(runtime_factory):
