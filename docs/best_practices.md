@@ -148,8 +148,8 @@ def heavy_compute(data, verbose=False, workers=4):
 否则，仅仅修改 `verbose=True` 就会导致昂贵的计算任务重跑。
 
 ### 5.2 合理选择执行器
-*   **I/O 密集型**: 使用 `executor="thread"` (默认)。适合网络请求、文件读写。
-*   **CPU 密集型**: 使用 `executor="process"`。因为 Python GIL 的存在，CPU 密集型任务必须用多进程才能并行。
+*   当前仅支持 `executor="thread"` (默认)。适合网络请求、文件读写，以及大多数由外部库释放 GIL 的数值计算。
+*   如果单节点本身有内部并行能力，优先让节点函数内部控制并行度，而不是依赖框架层多进程执行器。
 
 ### 5.3 缓存清理
 不要暴力删除 `.cache/` 目录。
@@ -218,26 +218,12 @@ data_2020_A = result[0, 0]
 # 自动汇聚所有模型的结果，计算平均分数
 @node.define(reduce_dims="model")
 def average_score(results):
-    # results 是一个列表 (因为 model 维度被归约了)
-    return sum(r["score"] for r in results) / len(results)
+    # results 是 DimensionedResult（可直接使用 dims/coords）
+    return sum(r["score"] for r in results.flat) / len(results.flat)
 
 grid = train(time=time(), model=model())
 final_metric = average_score(grid) # 此时 final_metric 只保留 time 维度
 ```
-
-### 6.5 维度缓存策略
-默认情况下，维度广播产生的子节点和最终聚合结果都会跟随 `cache` 行为。
-
-如果子节点计算昂贵、但整体 `DimensionedResult` 体积很大且复用价值不高，
-优先考虑只缓存子节点：
-
-```python
-@node.define(cache=True, cache_aggregate=False)
-def train_one(time, model):
-    ...
-```
-
-这样可以保留广播子任务的磁盘缓存，同时避免把最终聚合结果重复落盘。
 
 
 ## 7. 调试与复现 (Debugging)

@@ -76,6 +76,7 @@ def broadcast(
     vector_inputs: dict[str, "Node"],
     cache: bool,
     target_dims: tuple[str, ...] | None = None,
+    reduce_dims_order: tuple[str, ...] | None = None,
 ) -> tuple[tuple[str, ...], dict[str, list[Any]], np.ndarray]:
     """Perform broadcasting logic for Vector Nodes with Partial Slicing support.
     
@@ -87,6 +88,9 @@ def broadcast(
         target_dims: If provided, specific dimensions to broadcast over. 
                      Dimensions in inputs but NOT in target_dims are passed as full slices (vectors).
                      If None, defaults to Union of all input dims.
+        reduce_dims_order: Declared reduction-dimension order. When provided,
+                    reduced vector slices are wrapped as DimensionedResult with
+                    axes ordered to match this declaration.
     """
     from .core import Node
     
@@ -144,7 +148,24 @@ def broadcast(
                 indices[idx_pos] if idx_pos is not None else slice(None)
                 for idx_pos in vector_dim_positions[k]
             )
-            scalar_inputs[k] = v._items[slice_key]
+            value = v._items[slice_key]
+            if (
+                reduce_dims_order is not None
+                and isinstance(value, np.ndarray)
+                and value.ndim > 0
+            ):
+                sliced_dims = tuple(d for d in v.dims if d not in bcast_dim_to_idx)
+                reduced_dims = tuple(d for d in reduce_dims_order if d in sliced_dims)
+                if reduced_dims:
+                    if sliced_dims != reduced_dims:
+                        axis_perm = tuple(sliced_dims.index(d) for d in reduced_dims)
+                        value = np.transpose(value, axis_perm)
+                    value = DimensionedResult(
+                        value,
+                        dims=reduced_dims,
+                        coords={d: available_dims[d] for d in reduced_dims},
+                    )
+            scalar_inputs[k] = value
         
         # Inject Current Coordinates (Implicit Args)
         for d in dims_to_inject:

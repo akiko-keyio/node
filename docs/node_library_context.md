@@ -80,18 +80,10 @@ def get_current_time():
     return datetime.now()
 ```
 
-**只缓存维度子节点，不缓存聚合结果**
+**多维节点缓存行为**
 
-当多维广播会展开出大量子节点时，可以保留子节点缓存，同时跳过最终
-`DimensionedResult` 的整体缓存：
-
-```python
-@node.define(cache=True, cache_aggregate=False)
-def train_one(model, year):
-    ...
-```
-
-如果不传 `cache_aggregate`，它会默认跟随 `cache` 的行为。
+当多维广播会展开出大量子节点时，框架使用统一缓存语义：`cache` 同时作用于
+当前节点和其广播子节点，不再提供单独的聚合缓存开关。
 
 **排除参数**
 
@@ -325,6 +317,10 @@ def summary(data):
     return {"count": len(data.flat), "total": sum(d["value"] for d in data.flat)}
 ```
 
+`reduce_dims` 节点收到的 `data` 是 `DimensionedResult`。当声明
+`reduce_dims=["time", "model"]` 时，`data.dims` 会严格等于
+`("time", "model")`，轴顺序与声明一致。
+
 **部分归约**
 
 ```python
@@ -355,8 +351,7 @@ avgs = site_avg(data=grid)          # dims=("site",)
 
 | 参数          | 默认值   | 说明                      |
 | ------------- | -------- | ------------------------- |
-| `cache`       | `True`   | 是否缓存广播产生的子节点结果 |
-| `cache_aggregate` | `None` | 是否缓存节点自身结果；未设置时跟随 `cache` |
+| `cache`       | `True`   | 是否缓存当前节点及其广播子节点结果 |
 | `workers`     | 继承全局 | 最大并发数，`-1` 全部 CPU |
 | `local`       | `False`  | 是否在主线程执行          |
 | `reduce_dims` | `()`     | 归约维度，`"all"` 全部    |

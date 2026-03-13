@@ -97,18 +97,10 @@ def get_current_time():
     return datetime.now()
 ```
 
-**只缓存维度子节点，不缓存聚合结果**
+**多维节点缓存行为**
 
-多维广播会生成很多子节点；如果你希望这些子节点继续复用磁盘缓存，
-但不想把最终的 `DimensionedResult` 整体再缓存一份，可以这样写：
-
-```python
-@node.define(cache=True, cache_aggregate=False)
-def train_one(model, year):
-    ...
-```
-
-如果未显式设置 `cache_aggregate`，它会默认跟随 `cache`。
+多维广播会生成很多子节点。框架采用统一缓存语义：`@node.define(cache=...)`
+同时控制当前节点和其广播子节点是否参与缓存；不再区分额外的聚合缓存开关。
 
 **排除参数**
 
@@ -141,14 +133,10 @@ node.configure(cache=ChainCache([
 | `DiskCache` | 冷数据持久化   | `root`: 缓存目录               |
 | `ChainCache` | 多级组合       | 按顺序查找，命中后回填上级缓存 |
 
-**DimensionedResult 缓存范围**
+**Item Cache First（维度执行路径）**
 
-默认仅缓存根节点的 `DimensionedResult`（`cache_dimension_scope="root_only"`），
-中间节点的 `DimensionedResult` 不落盘；若需要保留历史行为可设为 `"all"`：
-
-```python
-node.configure(cache_dimension_scope="all")
-```
+框架的多维执行以 item 节点为主路径；`DimensionedResult` 主要用于结果表达和
+`reduce_dims` 输入语义，不再维护独立的特殊持久化缓存体系。
 
 ---
 
@@ -497,6 +485,10 @@ def summary(data: DimensionedResult) -> dict:
     }
 ```
 
+`reduce_dims` 节点接收到的 `data` 始终是 `DimensionedResult`。当写成
+`reduce_dims=["time", "model"]` 时，`data.dims` 会严格等于
+`("time", "model")`，无需再猜测 ndarray 轴顺序。
+
 **部分归约**
 
 归约指定维度，保留其他维度：
@@ -592,12 +584,11 @@ for item, coords in trained.items():
 | ------------------------- | ----------------------------------------- | ------------------------------------- |
 | `config`                  | `None`                                    | Config 对象或 YAML 文件路径           |
 | `cache`                   | `ChainCache([MemoryLRU(), DiskCache()])` | 缓存后端                              |
-| `executor`                | `"thread"`                                | 执行器类型：`"thread"` 或 `"process"` |
+| `executor`                | `"thread"`                                | 执行器类型，仅支持 `"thread"`         |
 | `workers`                 | `4`                                       | 默认并发数                            |
 | `continue_on_error`       | `True`                                    | 节点失败时是否继续执行其他节点        |
 | `validate`                | `True`                                    | 是否使用 Pydantic 验证参数类型        |
 | `limit_inner_parallelism` | `True`                                    | 限制节点内部的 BLAS/OpenMP 线程数     |
-| `cache_dimension_scope`   | `"root_only"`                             | `DimensionedResult` 缓存范围：`"root_only"`/`"all"` |
 
 ```python
 # 重新配置需先重置
@@ -611,8 +602,7 @@ node.configure(workers=8)
 
 | 参数          | 默认值   | 说明                              |
 | ------------- | -------- | --------------------------------- |
-| `cache`       | `True`   | 是否缓存广播产生的子节点结果      |
-| `cache_aggregate` | `None` | 是否缓存节点自身结果；未设置时跟随 `cache` |
+| `cache`       | `True`   | 是否缓存当前节点及其广播子节点结果 |
 | `workers`     | 继承全局 | 最大并发数，`-1` 表示使用全部 CPU |
 | `local`       | `False`  | 是否在主线程执行                  |
 | `reduce_dims` | `()`     | 归约维度，`"all"` 表示全部        |

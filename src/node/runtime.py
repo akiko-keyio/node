@@ -4,23 +4,20 @@ from __future__ import annotations
 
 import inspect
 import os
-import pickle
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
-from collections import deque
 
 from graphlib import TopologicalSorter
 from collections.abc import Callable, Sequence
 from typing import Any, TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
-
-from loky import ProcessPoolExecutor
 from omegaconf import OmegaConf
 import numpy as np
 
 from .cache import Cache, ChainCache, DiskCache, MemoryLRU
+from .cache_namespace import cache_namespace
 from .config import Config
 from .core import build_graph
 from .logger import logger
@@ -52,14 +49,12 @@ def configure(
     *,
     config: Config | str | None = None,
     cache: Cache | None = None,
-    executor: str = "thread",
+    executor: Literal["thread"] = "thread",
     workers: int = 4,
     reporter: Any = None,
     continue_on_error: bool = True,
     validate: bool = True,
     limit_inner_parallelism: bool = True,
-    memory_aware_scheduling: bool = True,
-    cache_dimension_scope: Literal["root_only", "all"] = "root_only",
 ) -> "Runtime":
     """Configure the global Runtime. Can only be called once.
 
@@ -70,7 +65,7 @@ def configure(
     cache:
         Cache instance. Defaults to ChainCache(MemoryLRU, DiskCache).
     executor:
-        "thread" or "process".
+        Execution backend. Only ``"thread"`` is supported.
     workers:
         Default worker count.
     reporter:
@@ -82,15 +77,6 @@ def configure(
     limit_inner_parallelism:
         If True, automatically limit inner parallelism (e.g., sklearn n_jobs,
         numpy BLAS threads) to prevent thread explosion. Defaults to True.
-    memory_aware_scheduling:
-        If True, prioritize ready nodes that can release more dependencies
-        immediately after completion. Defaults to True.
-    cache_dimension_scope:
-        Controls DimensionedResult cache behavior.
-        - "root_only": only cache the root node's DimensionedResult.
-        - "all": cache DimensionedResult for all eligible nodes.
-        Defaults to "root_only".
-
     Returns
     -------
     Runtime
@@ -110,8 +96,6 @@ def configure(
             continue_on_error=continue_on_error,
             validate=validate,
             limit_inner_parallelism=limit_inner_parallelism,
-            memory_aware_scheduling=memory_aware_scheduling,
-            cache_dimension_scope=cache_dimension_scope,
         )
     return _runtime
 
@@ -121,32 +105,6 @@ def reset() -> None:
     global _runtime
     with _runtime_lock:
         _runtime = None
-
-
-def _call_fn(
-    fn: Callable,
-    args: Sequence[Any],
-    kwargs: dict[str, Any],
-    node_key: str | None = None,
-) -> Any:
-    from .reporter import _track_ctx
-
-    prev = getattr(_track_ctx, "node", None)
-    if node_key is not None:
-        _track_ctx.node = node_key
-    try:
-        return fn(*args, **kwargs)
-    finally:
-        if node_key is not None:
-            _track_ctx.node = prev
-
-
-def _cache_fn_name(node: "Node") -> str:
-    """Return cache namespace for a node.
-
-    Dimension aggregate results are stored under ``<fn_name>/dim``.
-    """
-    return f"{node.fn.__name__}/dim" if node.dims else node.fn.__name__
 
 
 class Runtime:
@@ -161,14 +119,12 @@ class Runtime:
         *,
         config: Config | str | None = None,
         cache: Cache | None = None,
-        executor: str = "thread",
+        executor: Literal["thread"] = "thread",
         workers: int = 4,
         reporter: Any = None,
         continue_on_error: bool = True,
         validate: bool = True,
         limit_inner_parallelism: bool = True,
-        memory_aware_scheduling: bool = True,
-        cache_dimension_scope: Literal["root_only", "all"] = "root_only",
     ):
         # Config
         self.config = config if isinstance(config, Config) else Config(config)
@@ -182,17 +138,13 @@ class Runtime:
         self.cache = cache or ChainCache([MemoryLRU(), DiskCache()])
 
         # Execution
-        self.executor = executor
+        if executor != "thread":
+            raise ValueError("Only executor='thread' is supported.")
+        self.executor: Literal["thread"] = "thread"
         self.workers = workers
         self.continue_on_error = continue_on_error
         self.limit_inner_parallelism = limit_inner_parallelism
-        self.memory_aware_scheduling = memory_aware_scheduling
         self.validate = validate
-        if cache_dimension_scope not in {"root_only", "all"}:
-            raise ValueError(
-                "cache_dimension_scope must be either 'root_only' or 'all'."
-            )
-        self.cache_dimension_scope = cache_dimension_scope
 
         # Internal state
         self._can_save = hasattr(self.cache, "save_script")
@@ -201,8 +153,6 @@ class Runtime:
         self._lock = threading.Lock()
         self._registry: WeakValueDictionary["Node", "Node"] = WeakValueDictionary()
         self._results: dict[int, Any] = {}
-        self._run_root: Node | None = None
-
         # Reporter
         if reporter is None:
             try:
@@ -233,13 +183,14 @@ class Runtime:
     def _resolve(self, v):
         """Recursively resolve parameter values, replacing Nodes with their cached results."""
         from .core import Node
+        from .dimension import DimensionedResult
         if isinstance(v, Node):
             # First check _results (for just-computed nodes), then cache
             if v._hash in self._results:
                 return self._results[v._hash]
             if not self._cache_enabled_for(v):
                 return None
-            hit, val = self.cache.get(_cache_fn_name(v), v._hash)
+            hit, val = self.cache.get(cache_namespace(v), v._hash)
             return val if hit else None
         elif isinstance(v, dict):
             return {k: self._resolve(item) for k, item in v.items()}
@@ -254,33 +205,20 @@ class Runtime:
                 out = np.empty(len(res), dtype=object)
                 for i, r in enumerate(res):
                     out[i] = r
-                return out.reshape(v.shape)
+                resolved = out.reshape(v.shape)
+                if isinstance(v, DimensionedResult):
+                    return DimensionedResult(
+                        resolved,
+                        dims=v.dims,
+                        coords=v.coords,
+                    )
+                return resolved
             return v
         return v
 
-    @staticmethod
-    def _is_dimension_result_node(node: "Node") -> bool:
-        """Return whether node evaluates to a DimensionedResult."""
-        return bool(node.dims)
-
     def _cache_enabled_for(self, node: "Node") -> bool:
         """Return whether cache read/write is enabled for this node."""
-        if not node.cache:
-            return False
-        if (
-            self.cache_dimension_scope == "root_only"
-            and self._is_dimension_result_node(node)
-        ):
-            return self._run_root is node
-        return True
-
-    def _build_graph_cache_filter(self, node: "Node", is_root: bool) -> bool:
-        """Control cache pruning eligibility during graph construction."""
-        if self.cache_dimension_scope == "root_only" and self._is_dimension_result_node(
-            node
-        ):
-            return is_root
-        return True
+        return node.cache
 
     def _fail_node(
         self, n: Node, start: float, sem: threading.Semaphore | None
@@ -312,15 +250,18 @@ class Runtime:
                 kwargs[name] = resolved_args[name]
         return args, kwargs
 
-    def _save_result(self, node: Node, val: Any, start: float) -> None:
+    def _save_result(
+        self, node: Node, val: Any, start: float, *, count_exec: bool = True
+    ) -> None:
         """Save result to cache and trigger callbacks after successful execution."""
         self._results[node._hash] = val
-        with self._lock:
-            self._exec_count += 1
+        if count_exec:
+            with self._lock:
+                self._exec_count += 1
         
         if self._cache_enabled_for(node):
             self._set_node_state(node, "cache_writing")
-            self.cache.put(_cache_fn_name(node), node._hash, val)
+            self.cache.put(cache_namespace(node), node._hash, val)
             if self._can_save:
                 self.cache.save_script(node)
         
@@ -334,7 +275,7 @@ class Runtime:
             if dep._hash in self._results:
                 continue
             if self._cache_enabled_for(dep):
-                dep_hit, dep_val = self.cache.get(_cache_fn_name(dep), dep._hash)
+                dep_hit, dep_val = self.cache.get(cache_namespace(dep), dep._hash)
                 if dep_hit:
                     self._results[dep._hash] = dep_val
                     continue
@@ -356,7 +297,7 @@ class Runtime:
         if cache_enabled:
             self._set_node_state(n, "cache_reading")
         hit, val = (
-            self.cache.get(_cache_fn_name(n), n._hash) if cache_enabled else (False, None)
+            self.cache.get(cache_namespace(n), n._hash) if cache_enabled else (False, None)
         )
         if hit:
             dur = time.perf_counter() - start
@@ -402,16 +343,7 @@ class Runtime:
                 else:
                     val = val_array.item()
 
-                self._results[n._hash] = val
-                if cache_enabled:
-                    self._set_node_state(n, "cache_writing")
-                    self.cache.put(_cache_fn_name(n), n._hash, val)
-                    if self._can_save:
-                        self.cache.save_script(n)
-
-                dur = time.perf_counter() - start
-                if self.on_node_end is not None:
-                    self.on_node_end(n, dur, False, False)
+                self._save_result(n, val, start, count_exec=False)
                 return val
 
             # Resolve arguments from inputs and call function
@@ -445,29 +377,21 @@ class Runtime:
         ctx = parallel_context(self.workers) if self.limit_inner_parallelism else nullcontext()
         
         with ctx:
-            self._run_root = root
+            if reporter is None:
+                return self._run_internal(root, cache_root=cache_root)
+            graph = build_graph(root, self.cache)
             try:
-                if reporter is None:
-                    return self._run_internal(root, cache_root=cache_root)
-                graph = build_graph(
-                    root,
-                    self.cache,
-                    cache_filter=self._build_graph_cache_filter,
-                )
-                try:
-                    attach_sig = inspect.signature(reporter.attach)
-                    supports_order = "order" in attach_sig.parameters
-                except (TypeError, ValueError):
-                    supports_order = False
-                attach_ctx = (
-                    reporter.attach(self, root, order=graph[0])
-                    if supports_order
-                    else reporter.attach(self, root)
-                )
-                with attach_ctx:
-                    return self._run_internal(root, cache_root=cache_root, _graph=graph)
-            finally:
-                self._run_root = None
+                attach_sig = inspect.signature(reporter.attach)
+                supports_order = "order" in attach_sig.parameters
+            except (TypeError, ValueError):
+                supports_order = False
+            attach_ctx = (
+                reporter.attach(self, root, order=graph[0])
+                if supports_order
+                else reporter.attach(self, root)
+            )
+            with attach_ctx:
+                return self._run_internal(root, cache_root=cache_root, _graph=graph)
 
     def _run_internal(
         self,
@@ -484,7 +408,9 @@ class Runtime:
 
         use_cache = cache_root and self._cache_enabled_for(root)
         hit, val = (
-            self.cache.get(_cache_fn_name(root), root._hash) if use_cache else (False, None)
+            self.cache.get(cache_namespace(root), root._hash)
+            if use_cache
+            else (False, None)
         )
 
         if hit:
@@ -499,11 +425,7 @@ class Runtime:
             return val
 
         if _graph is None:
-            order, edges = build_graph(
-                root,
-                self.cache,
-                cache_filter=self._build_graph_cache_filter,
-            )
+            order, edges = build_graph(root, self.cache)
         else:
             order, edges = _graph
 
@@ -514,20 +436,6 @@ class Runtime:
         for deps in edges.values():
             for dep in deps:
                 dep_refcounts[dep._hash] = dep_refcounts.get(dep._hash, 0) + 1
-
-        def reclaim_gain(node: Node) -> int:
-            gain = 0
-            for dep in node._exec_deps:
-                if dep_refcounts.get(dep._hash) == 1:
-                    gain += 1
-            return gain
-
-        def sorted_ready(nodes: Sequence[Node]) -> list[Node]:
-            ready = list(nodes)
-            if not self.memory_aware_scheduling or len(ready) <= 1:
-                return ready
-            ready.sort(key=reclaim_gain, reverse=True)
-            return ready
 
         def release_consumed_deps(node: Node) -> None:
             for dep in node._exec_deps:
@@ -552,21 +460,9 @@ class Runtime:
                 max_node_workers = workers
 
         if min(self.workers, max_node_workers) <= 1:
-            if not self.memory_aware_scheduling:
-                for node in order:
-                    self._eval_node(node)
-                    release_consumed_deps(node)
-            else:
-                ts = TopologicalSorter(edges)
-                ts.prepare()
-                ready_nodes = sorted_ready(ts.get_ready())
-                while ready_nodes:
-                    node = ready_nodes.pop(0)
-                    self._eval_node(node)
-                    release_consumed_deps(node)
-                    ts.done(node)
-                    newly_ready = list(ts.get_ready())
-                    ready_nodes = sorted_ready([*ready_nodes, *newly_ready])
+            for node in order:
+                self._eval_node(node)
+                release_consumed_deps(node)
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
@@ -575,19 +471,6 @@ class Runtime:
             result = self._results.get(root._hash)
             return result
 
-        pool_cls = (
-            ThreadPoolExecutor if self.executor == "thread" else ProcessPoolExecutor
-        )
-        proc_q = None
-        pool_kwargs: dict[str, Any] = {"max_workers": self.workers}
-        if self.executor == "process":
-            from multiprocessing import Queue
-            from .reporter import _set_process_queue, _worker_init
-
-            proc_q = Queue()
-            _set_process_queue(proc_q)
-            pool_kwargs["initializer"] = _worker_init
-            pool_kwargs["initargs"] = (proc_q,)
         ts = TopologicalSorter(edges)
         ts.prepare()
 
@@ -599,140 +482,62 @@ class Runtime:
             if node.fn not in sems:
                 sems[node.fn] = threading.Semaphore(workers)
 
-        fut_map = {}
-        pending_nodes: deque[Node] = deque()
-        pending_hashes: set[str] = set()
-        with pool_cls(**pool_kwargs) as pool:
-
-            def enqueue_pending(node: Node) -> None:
-                if node._hash not in pending_hashes:
-                    pending_nodes.append(node)
-                    pending_hashes.add(node._hash)
-
-            def drain_pending() -> None:
-                if self.executor != "process" or not pending_nodes:
-                    return
-                pending_batch = list(pending_nodes)
-                pending_nodes.clear()
-                for pending in sorted_ready(pending_batch):
-                    pending_hashes.discard(pending._hash)
-                    submit(pending)
+        fut_map: dict[Any, Node] = {}
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
 
             def submit(node):
                 if any(d._hash in self._failed for d in node._exec_deps):
                     self._fail_node(node, time.perf_counter(), None)
                     release_consumed_deps(node)
                     ts.done(node)
-                    for ready in sorted_ready(ts.get_ready()):
+                    for ready in ts.get_ready():
                         submit(ready)
-                    drain_pending()
                     return
                 if getattr(node.fn, "_node_local", False):
                     self._eval_node(node)
                     release_consumed_deps(node)
                     ts.done(node)
-                    for ready in sorted_ready(ts.get_ready()):
+                    for ready in ts.get_ready():
                         submit(ready)
-                    drain_pending()
                     return
-                if self.executor == "thread":
-                    sem = sems[node.fn]
-                    fut_map[pool.submit(self._eval_node, node, sem)] = node
-                else:
-                    start = time.perf_counter()
-                    if self.on_node_start:
-                        self.on_node_start(node)
-                    cache_enabled = self._cache_enabled_for(node)
-                    if cache_enabled:
-                        self._set_node_state(node, "cache_reading")
-                    hit, val = (
-                        self.cache.get(_cache_fn_name(node), node._hash)
-                        if cache_enabled
-                        else (False, None)
-                    )
-                    if hit:
-                        self._results[node._hash] = val
-                        if self.on_node_end:
-                            self.on_node_end(
-                                node, time.perf_counter() - start, True, False
-                            )
-                        release_consumed_deps(node)
-                        ts.done(node)
-                        for ready in sorted_ready(ts.get_ready()):
-                            submit(ready)
-                        return
-                    if node._exec_deps:
-                        self._set_node_state(node, "waiting")
-                        self._ensure_deps_ready(node)
-                    resolved_bound = {k: self._resolve(v) for k, v in node.inputs.items()}
-                    args, kwargs = self._bind_args(node, resolved_bound)
-                    sem = sems[node.fn]
-                    if not sem.acquire(blocking=False):
-                        self._set_node_state(node, "waiting")
-                        enqueue_pending(node)
-                        return
-                    self._set_node_state(node, "executing")
-                    fut = pool.submit(_call_fn, node.fn, args, kwargs, node._hash)
-                    fut_map[fut] = (node, start, sem, args, kwargs)
+                sem = sems[node.fn]
+                fut_map[pool.submit(self._eval_node, node, sem)] = node
 
-            for n in sorted_ready(ts.get_ready()):
+            for n in ts.get_ready():
                 submit(n)
-            drain_pending()
 
-            while fut_map or pending_nodes:
-                if not fut_map:
-                    drain_pending()
-                    if not fut_map:
-                        break
+            while fut_map:
                 done, _ = wait(fut_map, return_when=FIRST_COMPLETED)
                 for fut in done:
-                    info = fut_map.pop(fut)
-                    if self.executor == "thread":
-                        node = info
-                        fut.result()
-                    else:
-                        node, start, sem, args, kwargs = info
-                        try:
-                            val = fut.result()
-                        except (pickle.PicklingError, AttributeError):
-                            val = _call_fn(node.fn, args, kwargs, node._hash)
-                        except Exception as e:
-                            if self.continue_on_error:
-                                logger.error(
-                                    f"node {node.fn.__name__}_{node._hash:x} failed for {e}",
-                                    exc_info=True,
-                                )
-                                self._failed.add(node._hash)
-                                dur = time.perf_counter() - start
-                                if self.on_node_end is not None:
-                                    self.on_node_end(node, dur, False, True)
-                                sem.release()
-                                release_consumed_deps(node)
-                                ts.done(node)
-                                for ready in sorted_ready(ts.get_ready()):
-                                    submit(ready)
-                                continue
-                            else:
-                                sem.release()
-                                raise
-                        else:
-                            self._save_result(node, val, start)
-                        sem.release()
+                    node = fut_map.pop(fut)
+                    fut.result()
                     release_consumed_deps(node)
                     ts.done(node)
-                for n in sorted_ready(ts.get_ready()):
+                for n in ts.get_ready():
                     submit(n)
-                drain_pending()
 
         wall = time.perf_counter() - t0
-        if proc_q is not None:
-            from .reporter import _set_process_queue
-            _set_process_queue(None)
         if self.on_flow_end is not None:
             self.on_flow_end(root, wall, self._exec_count, len(self._failed))
         
         return self._results.get(root._hash)
 
     def delete(self, root: Node) -> None:
-        """Delete cache entry for ``root``."""
-        self.cache.delete(_cache_fn_name(root), root._hash)
+        """Delete cache entries reachable from ``root``.
+
+        Under item-cache-first semantics, invalidating a vector node should
+        clear its cached item subgraph as well, otherwise a rerun may still
+        hit item caches and appear non-invalidated.
+        """
+        stack: list[Node] = [root]
+        seen: set[int] = set()
+        while stack:
+            node = stack.pop()
+            if node._hash in seen:
+                continue
+            seen.add(node._hash)
+            if node.cache:
+                self.cache.delete(cache_namespace(node), node._hash)
+            for dep in node._exec_deps:
+                if hasattr(dep, "_hash"):
+                    stack.append(dep)

@@ -1,9 +1,10 @@
 import node
 from node import DiskCache
+from node.dimension import DimensionedResult
 
 
 def test_dimensioned_result_repr_after_disk_cache(tmp_path):
-    """DimensionedResult repr should work after DiskCache roundtrip."""
+    """DimensionedResult repr should work after reading from disk cache."""
     node.reset()
     node.configure(
         cache=DiskCache(tmp_path),
@@ -17,7 +18,7 @@ def test_dimensioned_result_repr_after_disk_cache(tmp_path):
     def dim():
         return [0, 1, 2]
 
-    @node.define()
+    @node.define(cache=True)
     def f(x: int) -> int:
         return x
 
@@ -26,7 +27,7 @@ def test_dimensioned_result_repr_after_disk_cache(tmp_path):
     assert hasattr(res1, "dims")
     assert hasattr(res1, "coords")
 
-    # Second run: should hit DiskCache and unpickle DimensionedResult
+    # Second run: should hit DiskCache and unpickle DimensionedResult aggregate
     res2 = f(x=dim())()
 
     # Ensure we got the same logical type back
@@ -39,8 +40,8 @@ def test_dimensioned_result_repr_after_disk_cache(tmp_path):
     assert res2.coords == res1.coords
 
 
-def test_dimensioned_result_can_skip_aggregate_cache(tmp_path):
-    """Broadcast items can be cached while the collected result is not."""
+def test_dimensioned_map_uses_regular_node_cache_semantics(tmp_path):
+    """Dimensioned map nodes use the same cache behavior as regular nodes."""
     node.reset()
     disk = DiskCache(tmp_path)
     node.configure(
@@ -55,7 +56,7 @@ def test_dimensioned_result_can_skip_aggregate_cache(tmp_path):
     def dim():
         return [0, 1, 2]
 
-    @node.define(cache=True, cache_aggregate=False)
+    @node.define(cache=True)
     def f(x: int) -> int:
         return x + 1
 
@@ -63,17 +64,58 @@ def test_dimensioned_result_can_skip_aggregate_cache(tmp_path):
     result = root()
 
     assert hasattr(result, "dims")
-    assert root.cache is False
+    assert root.cache is True
     assert root._items is not None
-    assert not disk.get(root.fn.__name__, root._hash)[0]
+    assert disk.get(root.fn.__name__, root._hash)[0]
     assert all(
         disk.get(item.fn.__name__, item._hash)[0]
         for item in root._items.flat
     )
 
 
-def test_cache_aggregate_defaults_to_cache(tmp_path):
-    """When omitted, aggregate caching should follow the cache flag."""
+def test_reduce_dims_data_order_follows_declaration(tmp_path):
+    """reduce_dims input data should be DimensionedResult with declared dim order."""
+    node.reset()
+    disk = DiskCache(tmp_path)
+    node.configure(
+        cache=disk,
+        executor="thread",
+        workers=1,
+        continue_on_error=False,
+        validate=False,
+    )
+
+    @node.dimension(name="time")
+    def time():
+        return [1, 2]
+
+    @node.dimension(name="model")
+    def model():
+        return ["a", "bb"]
+
+    @node.define()
+    def base(t: int, m: str) -> str:
+        return f"{t}-{m}"
+
+    @node.define(reduce_dims=["time", "model"])
+    def agg(data):
+        edge = f"{data[0, 0]}|{data[-1, -1]}"
+        return type(data), data.dims, data.coords, data.shape, edge
+
+    observed_type, observed_dims, observed_coords, observed_shape, edge = agg(
+        data=base(t=time(), m=model())
+    )()
+
+    assert edge == "1-a|2-bb"
+    assert observed_type is DimensionedResult
+    assert observed_dims == ("time", "model")
+    assert observed_coords["time"] == [1, 2]
+    assert observed_coords["model"] == ["a", "bb"]
+    assert observed_shape == (2, 2)
+
+
+def test_reduce_dims_preserves_non_reduced_coord_injection(tmp_path):
+    """Non-reduced dimensions should still inject the current scalar coord."""
     node.reset()
     disk = DiskCache(tmp_path)
     node.configure(
@@ -85,66 +127,64 @@ def test_cache_aggregate_defaults_to_cache(tmp_path):
     )
 
     @node.dimension()
-    def dim():
-        return [0, 1]
-
-    @node.define(cache=False)
-    def no_cache(x: int) -> int:
-        return x
-
-    root = no_cache(x=dim())
-    root()
-
-    assert root.cache is False
-    assert root._items is not None
-    assert not disk.get(root.fn.__name__, root._hash)[0]
-    assert all(
-        not disk.get(item.fn.__name__, item._hash)[0]
-        for item in root._items.flat
-    )
-
-
-def test_dimension_cache_scope_defaults_to_root_only(tmp_path):
-    """Default scope only caches root DimensionedResult, not intermediate ones."""
-    node.reset()
-    disk = DiskCache(tmp_path)
-    node.configure(
-        cache=disk,
-        executor="thread",
-        workers=1,
-        continue_on_error=False,
-        validate=False,
-    )
-
-    @node.dimension()
-    def dim():
+    def time():
         return [0, 1, 2]
 
-    @node.define()
-    def a(x: int) -> int:
-        return x + 1
+    @node.dimension()
+    def model():
+        return ["a", "b"]
 
     @node.define()
-    def b(y: int) -> int:
-        return y * 2
+    def load(t: int, m: str) -> int:
+        return t + len(m)
+
+    @node.define(reduce_dims=["time"])
+    def summary(data, model):
+        # model should be scalar coord for the current non-reduced slice.
+        return model, int(sum(data.flat))
+
+    grid = load(t=time(), m=model())
+    reduced = summary(data=grid)
+    result = reduced()
+    assert result.dims == ("model",)
+    assert result.shape == (2,)
+    assert result[0][0] == "a"
+    assert result[1][0] == "b"
+    assert result[0][1] == 6
+    assert result[1][1] == 6
+
+
+def test_reduce_dims_all_receives_full_dimensioned_result(tmp_path):
+    node.reset()
+    node.configure(
+        cache=DiskCache(tmp_path),
+        executor="thread",
+        workers=1,
+        continue_on_error=False,
+        validate=False,
+    )
+
+    @node.dimension(name="time")
+    def time():
+        return [1, 2]
 
     @node.define()
-    def c(z: int) -> int:
-        return z - 3
+    def load(t: int) -> int:
+        return t * 10
 
-    root_a = a(x=dim())
-    root_b = b(y=root_a)
-    root_c = c(z=root_b)
-    result = root_c()
-    assert hasattr(result, "dims")
+    @node.define(reduce_dims="all")
+    def summary(data):
+        return int(sum(data.flat)), data.dims, data.coords, data.shape
 
-    assert not disk.get(f"{root_a.fn.__name__}/dim", root_a._hash)[0]
-    assert not disk.get(f"{root_b.fn.__name__}/dim", root_b._hash)[0]
-    assert disk.get(f"{root_c.fn.__name__}/dim", root_c._hash)[0]
+    out, dims, coords, shape = summary(data=load(t=time()))()
+    assert out == 30
+    assert dims == ("time",)
+    assert coords["time"] == [1, 2]
+    assert shape == (2,)
 
 
-def test_dimension_cache_scope_all_caches_intermediate_dimension_results(tmp_path):
-    """Scope=all preserves caching for non-root DimensionedResult nodes."""
+def test_invalidate_dimension_node_clears_item_cache(tmp_path):
+    """Invalidating a dimensioned node should clear reachable item caches."""
     node.reset()
     disk = DiskCache(tmp_path)
     node.configure(
@@ -153,7 +193,6 @@ def test_dimension_cache_scope_all_caches_intermediate_dimension_results(tmp_pat
         workers=1,
         continue_on_error=False,
         validate=False,
-        cache_dimension_scope="all",
     )
 
     @node.dimension()
@@ -172,7 +211,15 @@ def test_dimension_cache_scope_all_caches_intermediate_dimension_results(tmp_pat
     root_b = b(y=root_a)
     root_b()
 
-    assert disk.get(f"{root_a.fn.__name__}/dim", root_a._hash)[0]
-    assert disk.get(f"{root_b.fn.__name__}/dim", root_b._hash)[0]
+    assert all(disk.get(item.fn.__name__, item._hash)[0] for item in root_a._items.flat)
+    assert all(disk.get(item.fn.__name__, item._hash)[0] for item in root_b._items.flat)
+
+    root_b.invalidate()
+    assert not any(
+        disk.get(item.fn.__name__, item._hash)[0] for item in root_a._items.flat
+    )
+    assert not any(
+        disk.get(item.fn.__name__, item._hash)[0] for item in root_b._items.flat
+    )
 
 

@@ -83,7 +83,6 @@ class Node:
         inputs: dict[str, Any],
         *,
         cache: bool = True,
-        cache_aggregate: bool | None = None,
         dims: tuple[str, ...] = (),
         coords: dict[str, list[Any]] | None = None,
         reduce_dims: Sequence[str] | str = (),
@@ -97,12 +96,8 @@ class Node:
         inputs : dict[str, Any]
             Input arguments for the function. Values can be constant values or other Nodes.
         cache : bool, optional
-            Whether to cache broadcast child nodes created from this node.
+            Whether to cache this node result and its broadcast child nodes.
             Defaults to True.
-        cache_aggregate : bool | None, optional
-            Whether to cache this node's own result. When ``None``, follows
-            ``cache``. This allows aggregate dimension results to skip caching
-            while still caching their broadcast child nodes.
         dims : tuple[str, ...], optional
             Dimensions associated with this node (if it's a VectorNode).
         coords : dict[str, list[Any]], optional
@@ -115,7 +110,7 @@ class Node:
         """
         self.fn = fn
         self.inputs = inputs
-        self.cache = cache if cache_aggregate is None else cache_aggregate
+        self.cache = bool(cache)
         
         self.dims = dims
         self.coords = coords or {}
@@ -127,14 +122,19 @@ class Node:
         vector_inputs = {k: v for k, v in inputs.items() if isinstance(v, Node) and v.dims}
         
         if reduce_dims and vector_inputs:
-            # Collect all input dimensions
-            all_input_dims = {d for v in vector_inputs.values() for d in v.dims}
+            # Collect all input dimensions while preserving first-seen order.
+            ordered_input_dims = tuple(
+                dict.fromkeys(d for v in vector_inputs.values() for d in v.dims)
+            )
+            all_input_dims = set(ordered_input_dims)
             
             # Handle "all" shortcut
             if reduce_dims == "all":
                 reduce_set = all_input_dims
+                reduce_order = ordered_input_dims
             else:
                 reduce_set = set(reduce_dims)
+                reduce_order = tuple(reduce_dims)
                 # Validate: reduce_dims must be subset of input dims
                 invalid = reduce_set - all_input_dims
                 if invalid:
@@ -146,7 +146,12 @@ class Node:
             
             # Use output_dims as target for broadcasting
             self.dims, self.coords, self._items = _broadcast(
-                fn, inputs, vector_inputs, cache, target_dims=output_dims
+                fn,
+                inputs,
+                vector_inputs,
+                cache,
+                target_dims=output_dims,
+                reduce_dims_order=reduce_order,
             )
 
         elif not dims and vector_inputs:
@@ -385,7 +390,6 @@ def define(
     ignore: list[str] | None = None,
     workers: int | None = None,
     cache: bool = True,
-    cache_aggregate: bool | None = None,
     local: bool = False,
     reduce_dims: Sequence[str] | str = (),
 ) -> Callable[[Callable[..., Any]], Callable[..., Node]]:
@@ -398,12 +402,8 @@ def define(
     workers : int, optional
         Maximum concurrency for this function. ``-1`` uses all cores.
     cache : bool, optional
-        Whether to cache child nodes created during broadcasting. Defaults to
-        True.
-    cache_aggregate : bool | None, optional
-        Whether to cache the node's own result. When ``None``, follows
-        ``cache``. This is useful for dimensioned aggregate results where child
-        nodes should be cached but the final collected result should not.
+        Whether to cache this node result and child nodes created during
+        broadcasting. Defaults to True.
     local : bool, optional
         Execute directly in the caller thread, bypassing any executor. 
         Defaults to False.
@@ -487,7 +487,6 @@ def define(
                 selected_fn,
                 bound.arguments,
                 cache=cache,
-                cache_aggregate=cache_aggregate,
                 reduce_dims=reduce_dims,
             )
             cached_node = current_runtime._registry.get(node)

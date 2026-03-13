@@ -55,3 +55,44 @@ def test_corrupt_cached_hit_recovers_with_dependencies(tmp_path, runtime_factory
     assert calls == ["base", "twice"]
 
 
+def test_disk_cache_has_entry_uses_lazy_namespace_index(tmp_path, monkeypatch):
+    disk = DiskCache(tmp_path)
+    fn_name = "demo"
+    hash_value = int("deadbeef", 16)
+    disk.put(fn_name, hash_value, {"ok": True})
+
+    assert disk._has_entry(fn_name, hash_value) is True
+
+    def _unexpected_path(*args, **kwargs):
+        raise AssertionError("indexed _has_entry should not rebuild file path")
+
+    monkeypatch.setattr(disk, "_path", _unexpected_path)
+    assert disk._has_entry(fn_name, hash_value) is True
+
+
+def test_disk_cache_lazy_index_tracks_put_and_delete(tmp_path):
+    disk = DiskCache(tmp_path)
+    fn_name = "demo"
+    hash_value = int("abc123", 16)
+
+    assert disk._has_entry(fn_name, hash_value) is False
+    disk.put(fn_name, hash_value, 1)
+    assert disk._has_entry(fn_name, hash_value) is True
+    disk.delete(fn_name, hash_value)
+    assert disk._has_entry(fn_name, hash_value) is False
+
+
+def test_disk_cache_lazy_index_handles_nested_namespace(tmp_path):
+    disk = DiskCache(tmp_path)
+    fn_name = "demo/nested"
+    hash_value = int("f00baa", 16)
+
+    disk.put(fn_name, hash_value, 1)
+    assert disk._has_entry(fn_name, hash_value) is True
+
+    p = disk._path(fn_name, hash_value)
+    p.unlink()
+    disk._handle_corrupt_cache(p, ValueError("boom"))
+    assert disk._has_entry(fn_name, hash_value) is False
+
+
