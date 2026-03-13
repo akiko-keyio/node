@@ -47,12 +47,12 @@ def bench() -> None:
     print(f"repr : {t1 - t0:6.2f} s (skipped)")
 
     t0 = time.perf_counter()
-    node.run(root)
+    root()
     t1 = time.perf_counter()
     print(f"cold run : {t1 - t0:6.2f} s")
 
     t0 = time.perf_counter()
-    node.run(root)
+    root()
     t1 = time.perf_counter()
     print(f"warm run : {t1 - t0:6.2f} s")
 

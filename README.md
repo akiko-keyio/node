@@ -50,18 +50,20 @@ slow_compute(6)()  # 参数变化：重新计算
 
 **缓存键计算**
 
-每个节点缓存键由以下因素决定：
+每个节点的缓存键由以下因素决定：
 
 ```
-当前节点缓存键 = hash(函数名 + 参数值 + 依赖节点的缓存键)
+缓存键 = hash(函数名, sorted((参数名, 参数值), ...))
 ```
+
+其中依赖节点类型的参数值使用该节点的缓存键表示，普通参数使用确定性序列化表示。参数按名称排序以保证跨运行一致性。
 
 **函数名**
 
-函数名标识计算逻辑，函数体变更不会自动使缓存失效。修改函数实现后需手动清理
+函数名标识计算逻辑，函数体变更不会自动使缓存失效。修改函数实现后需手动清理：
 
 ```python
-result.invalidate()  # 清除单个节点的缓存
+result.invalidate()  # 清除该节点及其所有依赖的缓存
 ```
 
 **纯函数要求**
@@ -97,11 +99,6 @@ def get_current_time():
     return datetime.now()
 ```
 
-**多维节点缓存行为**
-
-多维广播会生成很多子节点。框架采用统一缓存语义：`@node.define(cache=...)`
-同时控制当前节点和其广播子节点是否参与缓存；不再区分额外的聚合缓存开关。
-
 **排除参数**
 
 某些参数（如调试标志）不应影响缓存键。使用 `ignore` 排除：
@@ -133,11 +130,6 @@ node.configure(cache=ChainCache([
 | `DiskCache` | 冷数据持久化   | `root`: 缓存目录               |
 | `ChainCache` | 多级组合       | 按顺序查找，命中后回填上级缓存 |
 
-**Item Cache First（维度执行路径）**
-
-框架的多维执行以 item 节点为主路径；`DimensionedResult` 主要用于结果表达和
-`reduce_dims` 输入语义，不再维护独立的特殊持久化缓存体系。
-
 ---
 
 ## 追溯
@@ -156,7 +148,7 @@ print(repr(square(add(2, 3))))
 ```python
 # hash = 7c3b8fad541e11
 add_0 = add(x=2, y=3)
-square_0 = square(z=add_0)
+square_0 = square(n=add_0)
 ```
 
 **磁盘缓存自动保存脚本**
@@ -189,10 +181,7 @@ d1, d2, d3 = download(url1), download(url2), download(url3)
 
 **执行器类型**
 
-| 类型        | 适用场景                             |
-| ----------- | ------------------------------------ |
-| `"thread"`  | I/O 密集型任务（网络请求、文件读写） |
-| `"process"` | CPU 密集型任务（计算、数据处理）     |
+当前仅支持 `"thread"` 执行器，适用于 I/O 密集型任务（网络请求、文件读写）。对于 CPU 密集型任务，可配合 `limit_inner_parallelism` 控制内部线程数以避免线程爆炸。
 
 **节点级并发控制**
 
@@ -290,6 +279,25 @@ result = load_data(path="other.csv")()
 ```python
 node.cfg.load_data.path = "custom.csv"
 load_data()()  # 使用修改后的值
+```
+
+**`instantiate()` 绑定语义**
+
+`node.instantiate("xxx")` 会在调用时读取当前配置并构建一个已绑定参数的节点。
+后续如果再修改 `node.cfg`，已经返回的节点不会自动更新；需要重新调用
+`node.instantiate("xxx")` 才会使用新的配置值。
+
+`instantiate` 也支持一次性参数扫描：
+
+```python
+grid = node.instantiate(
+    "trop_eval",
+    sweep={
+        "trop_ls.basis": ["ahsh", "poly"],
+        "trop_ls.degree": range(1, 4),
+    },
+)
+result = grid()  # 结果包含 sweep_* 维度
 ```
 
 
@@ -451,14 +459,16 @@ grid.transpose("time", "model")   # 转置轴顺序
 
 **带坐标遍历**
 
-`items()` 方法遍历 `(元素, 坐标字典)` 对：
+结合 `numpy.ndindex` 与 `coords` 可遍历每个元素及其对应坐标：
 
 ```python
-# 合并带坐标的 DataFrame
+import numpy as np
+
 dfs = []
-for df, coords in result.items():
-    df = df.copy()
-    df["year"] = coords["time"]
+for idx in np.ndindex(result.shape):
+    df = result[idx].copy()
+    coord = {d: result.coords[d][idx[i]] for i, d in enumerate(result.dims)}
+    df["year"] = coord["time"]
     dfs.append(df)
 final = pd.concat(dfs)
 ```
@@ -568,8 +578,10 @@ print(result)
 trained = train(data=load(t=times), m=models)()
 print(f"训练结果维度: {trained.dims}")  # ("model", "time")
 
-for item, coords in trained.items():
-    print(f"  {coords['model']}-{coords['time']}: {item['score']:.3f}")
+for idx in np.ndindex(trained.shape):
+    item = trained[idx]
+    coord = {d: trained.coords[d][idx[i]] for i, d in enumerate(trained.dims)}
+    print(f"  {coord['model']}-{coord['time']}: {item['score']:.3f}")
 ```
 
 ---
@@ -623,8 +635,8 @@ node.configure(workers=8)
 | 方法                | 说明                       |
 | ------------------- | -------------------------- |
 | `node()`            | 执行 DAG 并返回结果        |
-| `node(force=True)`  | 清除缓存后重新执行         |
-| `node.invalidate()` | 清除该节点的缓存           |
+| `node(force=True)`  | 清除所有相关缓存后重新执行 |
+| `node.invalidate()` | 清除该节点及其所有依赖的缓存 |
 | `repr(node)`        | 生成可复现的 Python 脚本   |
 | `node.dims`         | 维度名元组（多维计算节点） |
 | `node.coords`       | 坐标字典（多维计算节点）   |
@@ -637,5 +649,6 @@ node.configure(workers=8)
 | ------------------- | ---------------------------------------- |
 | `.dims`             | 维度名元组，与轴顺序对应                 |
 | `.coords`           | 坐标字典 `{维度名: 坐标列表}`            |
+| `.shape`            | 数组形状，与 `.dims` 轴顺序对应          |
+| `.flat`             | 扁平迭代器，遍历所有元素                 |
 | `.transpose(*dims)` | 按维度名转置，返回新的 DimensionedResult |
-| `.items()`          | 迭代 `(元素, 坐标字典)` 对               |

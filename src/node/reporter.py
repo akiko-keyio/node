@@ -7,7 +7,6 @@ import time
 import sys
 import threading
 from queue import SimpleQueue, Empty
-from multiprocessing import Queue
 from collections.abc import Iterable, Generator
 from rich.progress import (
     Progress,
@@ -23,25 +22,12 @@ from rich.console import Group, Console  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.syntax import Syntax  # type: ignore[import]
-from rich.table import Table  # type: ignore[import]
 
 from .core import Node, _render_call, build_graph
 from .logger import console as _console
 
 # active reporter context for track()
 _track_ctx = threading.local()
-_process_queue: Queue | None = None
-
-
-def _set_process_queue(q: Queue | None) -> None:
-    global _process_queue
-    _process_queue = q
-    setattr(_track_ctx, "proc_queue", q)
-
-
-def _worker_init(q: Queue) -> None:
-    _set_process_queue(q)
-
 
 IN_JUPYTER = "ipykernel" in sys.modules
 
@@ -146,7 +132,6 @@ class _RichReporterCtx:
         self.exec_end: float | None = None
         self.spinner = Spinner("dots")
         self.current_node: str | None = None
-        self.proc_queue: Queue | None = None
         
         # Internal tracking
         self.node_to_fn_name: dict[str, str] = {}
@@ -157,8 +142,6 @@ class _RichReporterCtx:
         self.tracks: dict[str, tuple[Progress, int, str]] = {}
         self.node_track_ids: dict[str, set[str]] = {}
         self._done_icon_char = self._pick_done_icon()
-        # Cache ETA per function; update at most once per elapsed second.
-        self._eta_cache: dict[str, tuple[int, float | None]] = {}
 
     def _pick_done_icon(self) -> str:
         """Return a completion icon supported by the active console encoding."""
@@ -257,7 +240,6 @@ class _RichReporterCtx:
             console=self.cfg.console,
         )
         self.live.__enter__()
-        self.proc_queue = _process_queue
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._loop, daemon=True)
         self.t.start()
@@ -276,7 +258,6 @@ class _RichReporterCtx:
         self.runtime.on_node_end = self.orig_end
         self.runtime.on_node_state = self.orig_state
         self.runtime.on_flow_end = self.orig_flow
-        _set_process_queue(None)
 
     # --------------------------------------------------------------
     def _start(self, n: Node) -> None:
@@ -345,12 +326,6 @@ class _RichReporterCtx:
         self.q.put(("track_end", tid))
 
     def _drain(self) -> None:
-        if self.proc_queue is not None:
-            while True:
-                try:
-                    self.q.put(self.proc_queue.get_nowait())
-                except Empty:
-                    break
         while True:
             try:
                 typ, *rest = self.q.get_nowait()
@@ -527,13 +502,7 @@ class _RichReporterCtx:
                 icon = spinner
                 count_text = f"{stats.completed}/{stats.total}"
                 state_summary = self._format_state_summary(stats)
-                sec_key = int(duration)
-                cached = self._eta_cache.get(fn_name)
-                if cached is not None and cached[0] == sec_key:
-                    eta = cached[1]
-                else:
-                    eta = self._estimate_remaining(duration, stats.completed, stats.total)
-                    self._eta_cache[fn_name] = (sec_key, eta)
+                eta = self._estimate_remaining(duration, stats.completed, stats.total)
                 if eta is not None:
                     dur_str = f"[{self._format_dur(duration)} | ETA {self._format_eta(eta)}]"
                 else:

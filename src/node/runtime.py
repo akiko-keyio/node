@@ -131,7 +131,6 @@ class Runtime:
 
         self._initial_config = Config(
             OmegaConf.create(self.config._conf),
-            cache_nodes=self.config._cache_nodes,
         )
 
         # Cache

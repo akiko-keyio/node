@@ -23,10 +23,9 @@ Configuration
 See Also
 --------
 node.define : Decorate a function to create a Node.
-node.run : Execute the entire DAG.
 """
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from typing import Any
 
 # Core exports
@@ -36,38 +35,19 @@ from .cache import Cache, ChainCache, MemoryLRU, DiskCache
 from .config import Config
 from .runtime import Runtime, get_runtime, configure, reset
 from .logger import logger, console
-from .parallel import parallel_context
 
-# Module-level API that delegates to singleton Runtime
-def run(root: Node, *, reporter=None, cache_root: bool = True):
-    """Run the DAG rooted at ``root``.
-    
-    Parameters
-    ----------
-    root : Node
-        The solution node (root of the DAG) to execute.
-    reporter : Reporter, optional
-        Progress reporter instance.
-    cache_root : bool, optional
-        Whether to cache the result of the root node itself. 
-        Defaults to True.
 
-    Returns
-    -------
-    Any
-        The result of the computation.
+def instantiate(name: str, *, sweep: Mapping[str, Any] | None = None) -> Node:
+    """Instantiate a node from current runtime config by section name.
 
-    Examples
-    --------
-    >>> result = node.run(my_task(1, 2))
+    The config is read when this function is called. The returned node keeps that
+    bound configuration; later ``node.cfg`` updates do not retroactively change it.
+    Re-run ``instantiate()`` after config edits if you want a new bound node.
+    When ``sweep`` is provided, instantiate returns a dimensioned node over the
+    Cartesian product of sweep values.
     """
-    return get_runtime().run(root, reporter=reporter, cache_root=cache_root)
-
-
-def instantiate(name: str) -> Node:
-    """Instantiate a node from current runtime config by section name."""
     runtime = get_runtime()
-    return runtime.config.instantiate(name, runtime=runtime)
+    return runtime.config.instantiate(name, runtime=runtime, sweep=sweep)
 
 
 class _CfgProxy:
@@ -104,10 +84,9 @@ except Exception:  # pragma: no cover - optional
     pass
 
 __all__ = [
-    # New API
+    # Core API
     "configure",
     "define",
-    "run",
     "instantiate",
     "dimension",
     "reset",
@@ -127,8 +106,6 @@ __all__ = [
     # Config
     "Config",
     "cfg",
-    # Parallel
-    "parallel_context",
     # Optional
     "RichReporter",
     "track",

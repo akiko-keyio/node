@@ -14,7 +14,6 @@ import yaml  # type: ignore[import]
 
 import node
 from node import ChainCache, Config, DiskCache, MemoryLRU
-from node import RichReporter
 node.reset()
 node.configure()
 # --------------------------------------------------------------
@@ -33,7 +32,7 @@ def square(z: int) -> int:
 
 def quick_start() -> None:
     root = square(add(2, 3))
-    print("Quick result:", node.run(root))
+    print("Quick result:", root())
     print("repr(root) =", repr(root))
 
 
@@ -75,13 +74,12 @@ def inc(x: int) -> int:
 
 def advanced_topics() -> None:
     root = slow_square(slow_add(slow_square(2), slow_square(2)))
-    reporter = RichReporter()
-    result = node.run(root, reporter=reporter)
+    result = root()
     print("Advanced result:", result)
     print("repr(root) =", repr(root))
 
     start = time.perf_counter()
-    node.run(root, reporter=reporter)
+    root()
     elapsed = time.perf_counter() - start
     print(f"Second run from cache: {elapsed:.2f}s")
 

@@ -11,7 +11,7 @@ def test_config_cache_toggle(runtime_factory):
 
     # start with value 1
     rt.config = Config(
-        {"echo": {"_target_": f"{__name__}.echo", "value": 1}}, cache_nodes=False
+        {"echo": {"_target_": f"{__name__}.echo", "value": 1}}
     )
 
     first = echo()

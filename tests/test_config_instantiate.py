@@ -60,31 +60,6 @@ def test_instantiate_dependency(runtime_factory):
     assert n() == 20
 
 
-def test_instantiate_cache_nodes_toggle(runtime_factory):
-    @node.define()
-    def echo(value: int) -> int:
-        return value
-
-    module_name = __name__
-    this_module = sys.modules[module_name]
-    setattr(this_module, "echo", echo)
-
-    cfg = {"echo_node": {"_target_": f"{module_name}.echo", "value": 1}}
-    rt = runtime_factory(config=Config(cfg, cache_nodes=False))
-
-    n1 = node.instantiate("echo_node")
-    rt.config._conf.echo_node.value = 2
-    n2 = node.instantiate("echo_node")
-    assert n1 is not n2
-    assert n2() == 2
-
-    rt.config = Config(cfg, cache_nodes=True)
-    c1 = node.instantiate("echo_node")
-    rt.config._conf.echo_node.value = 3
-    c2 = node.instantiate("echo_node")
-    assert c1 is c2
-
-
 def test_instantiate_resolves_presets(runtime_factory):
     @node.define()
     def add(x: int, y: int) -> int:
@@ -133,3 +108,86 @@ def test_instantiate_invalid_config(runtime_factory):
         node.instantiate("value")
     with pytest.raises(ConfigurationError):
         node.instantiate("bad_target")
+
+
+def test_instantiate_sweep_top_level(runtime_factory):
+    @node.define()
+    def score(degree: int, basis: str) -> str:
+        return f"{basis}:{degree}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "score", score)
+
+    cfg = {
+        "eval_node": {
+            "_target_": f"{module_name}.score",
+            "degree": 1,
+            "basis": "ahsh",
+        }
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "eval_node",
+        sweep={
+            "basis": ["ahsh", "poly"],
+            "degree": [1, 2, 3],
+        },
+    )
+    result = n()
+    assert result.dims == ("sweep_basis", "sweep_degree")
+    assert result.shape == (2, 3)
+    assert result[1, 2] == "poly:3"
+
+
+def test_instantiate_sweep_dotted_path_with_existing_dimension(runtime_factory):
+    @node.dimension(name="time")
+    def time_dim():
+        return [10, 20]
+
+    @node.define()
+    def load(t: int) -> int:
+        return t
+
+    @node.define()
+    def evaluate(x: int, trop_ls: dict[str, object]) -> str:
+        return f"{trop_ls['basis']}:{trop_ls['degree']}:{x}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "time_dim", time_dim)
+    setattr(this_module, "load", load)
+    setattr(this_module, "evaluate", evaluate)
+
+    cfg = {
+        "time_node": {
+            "_target_": f"{module_name}.time_dim",
+        },
+        "load_node": {
+            "_target_": f"{module_name}.load",
+            "t": "${time_node}",
+        },
+        "eval_node": {
+            "_target_": f"{module_name}.evaluate",
+            "x": "${load_node}",
+            "trop_ls": {
+                "basis": "ahsh",
+                "degree": 1,
+            },
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "eval_node",
+        sweep={
+            "trop_ls.basis": ["ahsh", "poly"],
+            "trop_ls.degree": [1, 2],
+        },
+    )
+    result = n()
+
+    assert result.dims == ("sweep_trop_ls_basis", "sweep_trop_ls_degree", "time")
+    assert result.shape == (2, 2, 2)
+    assert result[1, 1, 0] == "poly:2:10"
