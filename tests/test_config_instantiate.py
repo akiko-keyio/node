@@ -191,3 +191,73 @@ def test_instantiate_sweep_dotted_path_with_existing_dimension(runtime_factory):
     assert result.dims == ("sweep_trop_ls_basis", "sweep_trop_ls_degree", "time")
     assert result.shape == (2, 2, 2)
     assert result[1, 1, 0] == "poly:2:10"
+
+
+def test_instantiate_sweep_supports_referenced_subnode_config(runtime_factory):
+    @node.dimension(name="dim_hours")
+    def dim_hours():
+        return [1, 2]
+
+    @node.define()
+    def trop_ls(trop_matrix: int, grid_location: str, basis: str, degree: int) -> str:
+        return f"{basis}:{degree}:{trop_matrix}:{grid_location}"
+
+    @node.define()
+    def trop_eval(trop_ls: str, dim_hours: int) -> str:
+        return f"{trop_ls}|h={dim_hours}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "dim_hours", dim_hours)
+    setattr(this_module, "trop_ls", trop_ls)
+    setattr(this_module, "trop_eval", trop_eval)
+
+    cfg = {
+        "dim_hours": {"_target_": f"{module_name}.dim_hours"},
+        "trop_matrix": 7,
+        "grid_location": "G0",
+        "trop_ls": {
+            "_target_": f"{module_name}.trop_ls",
+            "trop_matrix": "${trop_matrix}",
+            "grid_location": "${grid_location}",
+            "basis": "ahsh",
+            "degree": 15,
+        },
+        "trop_eval": {
+            "_target_": f"{module_name}.trop_eval",
+            "trop_ls": "${trop_ls}",
+            "dim_hours": "${dim_hours}",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "trop_eval",
+        sweep={
+            "trop_ls.basis": ["ahsh", "poly"],
+            "trop_ls.degree": [1, 2, 3],
+        },
+    )
+    result = n()
+    assert set(result.dims) == {"sweep_basis", "sweep_degree", "dim_hours"}
+    assert result.coords["sweep_basis"] == ["ahsh", "poly"]
+    assert result.coords["sweep_degree"] == [1, 2, 3]
+    assert result.coords["dim_hours"] == [1, 2]
+    shape_by_dim = dict(zip(result.dims, result.shape, strict=True))
+    assert shape_by_dim == {
+        "sweep_basis": 2,
+        "sweep_degree": 3,
+        "dim_hours": 2,
+    }
+    idx_basis = result.coords["sweep_basis"].index("poly")
+    idx_degree = result.coords["sweep_degree"].index(3)
+    idx_hour = result.coords["dim_hours"].index(1)
+    index = tuple(
+        {
+            "sweep_basis": idx_basis,
+            "sweep_degree": idx_degree,
+            "dim_hours": idx_hour,
+        }[dim]
+        for dim in result.dims
+    )
+    assert result[index] == "poly:3:7:G0|h=1"

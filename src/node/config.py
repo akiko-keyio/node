@@ -152,6 +152,12 @@ class Config:
             )
         current[keys[-1]] = value
 
+    def _extract_config_reference(self, raw_value: Any) -> str | None:
+        """Return referenced config section for a ``${section}`` value."""
+        if isinstance(raw_value, str) and raw_value.startswith("${") and raw_value.endswith("}"):
+            return raw_value[2:-1]
+        return None
+
     def _instantiate_with_sweep(
         self,
         *,
@@ -328,14 +334,61 @@ class Config:
                 f"Config section '{name}' must resolve to a mapping."
             )
 
-        params = {
-            k: self._resolve_value(v, runtime)
-            for k, v in cfg_dict.items()
-            if k not in {"_target_", "_use_", "_presets_"}
-        }
+        remaining_sweep: Mapping[str, Any] | None = sweep
+        nested_sweep_specs: dict[str, tuple[str, dict[str, Any]]] = {}
+        if sweep:
+            unresolved_sweep: dict[str, Any] = {}
+            for raw_path, raw_values in sweep.items():
+                path = str(raw_path).strip()
+                keys = [k for k in path.split(".") if k]
+                if len(keys) <= 1:
+                    unresolved_sweep[path] = raw_values
+                    continue
+
+                head, tail = keys[0], ".".join(keys[1:])
+                raw_param_value = cfg_dict.get(head)
+                ref_section = self._extract_config_reference(raw_param_value)
+                if (
+                    ref_section
+                    and ref_section in self._conf
+                    and OmegaConf.is_dict(self._conf[ref_section])
+                    and "_target_" in self._conf[ref_section]
+                ):
+                    section_name, section_sweep = nested_sweep_specs.get(
+                        head, (ref_section, {})
+                    )
+                    if section_name != ref_section:
+                        raise ConfigurationError(
+                            f"Conflicting sweep target section for '{head}': "
+                            f"{section_name!r} vs {ref_section!r}"
+                        )
+                    section_sweep[tail] = raw_values
+                    nested_sweep_specs[head] = (section_name, section_sweep)
+                else:
+                    unresolved_sweep[path] = raw_values
+            remaining_sweep = unresolved_sweep or None
+
+        params: dict[str, Any] = {}
+        for k, v in cfg_dict.items():
+            if k in {"_target_", "_use_", "_presets_"}:
+                continue
+            if k in nested_sweep_specs:
+                section_name, section_sweep = nested_sweep_specs[k]
+                params[k] = self.instantiate(
+                    section_name,
+                    runtime=runtime,
+                    sweep=section_sweep,
+                )
+            else:
+                params[k] = self._resolve_value(v, runtime)
         return (
-            self._instantiate_with_sweep(name=name, fn=fn, params=params, sweep=sweep)
-            if sweep
+            self._instantiate_with_sweep(
+                name=name,
+                fn=fn,
+                params=params,
+                sweep=remaining_sweep,
+            )
+            if remaining_sweep
             else fn(**params)
         )
 
