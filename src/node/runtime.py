@@ -281,14 +281,33 @@ class Runtime:
             # Fallback: evaluate dependency recursively (self-heal for corrupt cache files).
             self._eval_node(dep)
 
-    def _eval_node(self, n: Node, sem: threading.Semaphore | None = None):
+    def _eval_node(
+        self,
+        n: Node,
+        sem: threading.Semaphore | None = None,
+        *,
+        post_resolve: Callable[[Node], None] | None = None,
+    ):
+        """Evaluate a single node.
+
+        Parameters
+        ----------
+        post_resolve:
+            Called right after this node's dependency values have been captured
+            into local variables (but before ``fn()`` runs).  The scheduler
+            passes ``release_deps`` here so that upstream results can be evicted
+            from ``_results`` as early as possible.
+        """
         if n._hash in self._results:
+            if post_resolve is not None:
+                post_resolve(n)
             return self._results[n._hash]
 
         start = time.perf_counter()
         if any(d._hash in self._failed for d in n._exec_deps):
-            # Semaphore is acquired only for real computation after cache miss.
             self._fail_node(n, start, None)
+            if post_resolve is not None:
+                post_resolve(n)
             return None
         if self.on_node_start is not None:
             self.on_node_start(n)
@@ -303,6 +322,8 @@ class Runtime:
             self._results[n._hash] = val
             if self.on_node_end is not None:
                 self.on_node_end(n, dur, True, False)
+            if post_resolve is not None:
+                post_resolve(n)
             return val
 
         if n._exec_deps:
@@ -318,25 +339,21 @@ class Runtime:
         try:
             self._set_node_state(n, "executing")
             if n._items is not None:
-                # VectorNode / Reduction Node:
-                # The result is the aggregation of its items (which are dependencies).
                 from .dimension import DimensionedResult
 
-                # Items are dependency nodes already materialized by _ensure_deps_ready.
                 results = [
                     self._results.get(item._hash) if hasattr(item, "_hash") else item
                     for item in n._items.flat
                 ]
 
-                # Reconstruct array structure
-                # Use explicit loop assignment to prevent NumPy 2.x from unpacking
-                # iterable objects (like DataFrames) during slice assignment
+                if post_resolve is not None:
+                    post_resolve(n)
+
                 val_flat = np.empty(len(results), dtype=object)
                 for i, res in enumerate(results):
                     val_flat[i] = res
                 val_array = val_flat.reshape(n._items.shape)
 
-                # Return as DimensionedResult if has dimensions, else unwrap scalar
                 if n.dims:
                     val = DimensionedResult(val_array, dims=n.dims, coords=n.coords)
                 else:
@@ -345,8 +362,9 @@ class Runtime:
                 self._save_result(n, val, start, count_exec=False)
                 return val
 
-            # Resolve arguments from inputs and call function
             resolved_args = {k: self._resolve(v) for k, v in n.inputs.items()}
+            if post_resolve is not None:
+                post_resolve(n)
             args, kwargs = self._bind_args(n, resolved_args)
             try:
                 val = n.fn(*args, **kwargs)
@@ -431,24 +449,22 @@ class Runtime:
         # Track how many downstream nodes still need each node's in-run result.
         # Once a node has no remaining consumers, its value can be released
         # from ``_results`` to reduce peak memory usage.
-        dep_refcounts: dict[int, int] = {}
-        for deps in edges.values():
-            for dep in deps:
-                dep_refcounts[dep._hash] = dep_refcounts.get(dep._hash, 0) + 1
-
-        def release_consumed_deps(node: Node) -> None:
+        dep_countdown: dict[int, int] = {}
+        for node in order:
             for dep in node._exec_deps:
-                dep_hash = dep._hash
-                remaining = dep_refcounts.get(dep_hash)
-                if remaining is None:
+                dh = dep._hash
+                dep_countdown[dh] = dep_countdown.get(dh, 0) + 1
+
+        def release_deps(completed_node: Node) -> None:
+            """Release dependencies synchronously in the scheduler thread."""
+            for dep in completed_node._exec_deps:
+                dh = getattr(dep, "_hash", None)
+                if dh is None or dh not in dep_countdown:
                     continue
-                remaining -= 1
-                if remaining <= 0:
-                    dep_refcounts.pop(dep_hash, None)
-                    if dep is not root:
-                        self._results.pop(dep_hash, None)
-                else:
-                    dep_refcounts[dep_hash] = remaining
+                dep_countdown[dh] -= 1
+                if dep_countdown[dh] == 0:
+                    self._results.pop(dh, None)
+                    del dep_countdown[dh]
 
         max_node_workers = 1
         for node in order:
@@ -460,15 +476,11 @@ class Runtime:
 
         if min(self.workers, max_node_workers) <= 1:
             for node in order:
-                self._eval_node(node)
-                release_consumed_deps(node)
+                self._eval_node(node, post_resolve=release_deps)
             wall = time.perf_counter() - t0
             if self.on_flow_end is not None:
                 self.on_flow_end(root, wall, self._exec_count, len(self._failed))
-            
-            # Use local results instead of re-getting from cache
-            result = self._results.get(root._hash)
-            return result
+            return self._results.get(root._hash)
 
         ts = TopologicalSorter(edges)
         ts.prepare()
@@ -481,26 +493,32 @@ class Runtime:
             if node.fn not in sems:
                 sems[node.fn] = threading.Semaphore(workers)
 
+        _cd_lock = threading.Lock()
+
+        def release_deps_ts(completed_node: Node) -> None:
+            """Thread-safe wrapper; may be called from worker threads."""
+            with _cd_lock:
+                release_deps(completed_node)
+
         fut_map: dict[Any, Node] = {}
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
 
             def submit(node):
                 if any(d._hash in self._failed for d in node._exec_deps):
                     self._fail_node(node, time.perf_counter(), None)
-                    release_consumed_deps(node)
+                    release_deps_ts(node)
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
                     return
                 if getattr(node.fn, "_node_local", False):
-                    self._eval_node(node)
-                    release_consumed_deps(node)
+                    self._eval_node(node, post_resolve=release_deps_ts)
                     ts.done(node)
                     for ready in ts.get_ready():
                         submit(ready)
                     return
                 sem = sems[node.fn]
-                fut_map[pool.submit(self._eval_node, node, sem)] = node
+                fut_map[pool.submit(self._eval_node, node, sem, post_resolve=release_deps_ts)] = node
 
             for n in ts.get_ready():
                 submit(n)
@@ -510,7 +528,6 @@ class Runtime:
                 for fut in done:
                     node = fut_map.pop(fut)
                     fut.result()
-                    release_consumed_deps(node)
                     ts.done(node)
                 for n in ts.get_ready():
                     submit(n)
