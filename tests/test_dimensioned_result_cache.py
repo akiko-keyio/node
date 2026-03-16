@@ -214,7 +214,7 @@ def test_invalidate_dimension_node_clears_item_cache(tmp_path):
     assert all(disk.get(item.fn.__name__, item._hash)[0] for item in root_a._items.flat)
     assert all(disk.get(item.fn.__name__, item._hash)[0] for item in root_b._items.flat)
 
-    root_b.invalidate()
+    root_b.invalidate(recursive=True)
     assert not any(
         disk.get(item.fn.__name__, item._hash)[0] for item in root_a._items.flat
     )

@@ -265,10 +265,11 @@ class Node:
             self.invalidate()
         return get_runtime().run(self, cache_root=self.cache)
 
-    def invalidate(self) -> None:
+    def invalidate(self, *, recursive: bool = False) -> None:
+        """Clear cache for this node. If *recursive* is true, also clear cache for all dependencies."""
         from .runtime import get_runtime
 
-        get_runtime().delete(self)
+        get_runtime().delete(self, recursive=recursive)
 
 
 # ---------------------------------------------------------------------------

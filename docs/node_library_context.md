@@ -388,7 +388,7 @@ avgs = site_avg(data=grid)          # dims=("site",)
 | ------------------- | ------------------------ |
 | `node()`            | 执行 DAG 并返回结果      |
 | `node(force=True)`  | 清除缓存后重新执行       |
-| `node.invalidate()` | 清除该节点的缓存         |
+| `node.invalidate()` | 仅清除该节点缓存；`invalidate(recursive=True)` 递归清除依赖 |
 | `repr(node)`        | 生成可复现的 Python 脚本 |
 | `node.dims`         | 维度名元组               |
 | `node.coords`       | 坐标字典                 |

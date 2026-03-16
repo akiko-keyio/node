@@ -63,7 +63,7 @@ slow_compute(6)()  # 参数变化：重新计算
 函数名标识计算逻辑，函数体变更不会自动使缓存失效。修改函数实现后需手动清理：
 
 ```python
-result.invalidate()  # 清除该节点及其所有依赖的缓存
+result.invalidate()  # 仅清除该节点缓存；result.invalidate(recursive=True) 可同时清除所有依赖的缓存
 ```
 
 **纯函数要求**
@@ -640,7 +640,7 @@ node.configure(workers=8)
 | ------------------- | -------------------------- |
 | `node()`            | 执行 DAG 并返回结果        |
 | `node(force=True)`  | 清除所有相关缓存后重新执行 |
-| `node.invalidate()` | 清除该节点及其所有依赖的缓存 |
+| `node.invalidate()` | 仅清除该节点缓存；`invalidate(recursive=True)` 可递归清除依赖 |
 | `repr(node)`        | 生成可复现的 Python 脚本   |
 | `node.dims`         | 维度名元组（多维计算节点） |
 | `node.coords`       | 坐标字典（多维计算节点）   |

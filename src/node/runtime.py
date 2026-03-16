@@ -538,13 +538,17 @@ class Runtime:
         
         return self._results.get(root._hash)
 
-    def delete(self, root: Node) -> None:
-        """Delete cache entries reachable from ``root``.
+    def delete(self, root: Node, *, recursive: bool = False) -> None:
+        """Delete cache for ``root``. If *recursive* is true, delete cache for all nodes reachable from root.
 
-        Under item-cache-first semantics, invalidating a vector node should
-        clear its cached item subgraph as well, otherwise a rerun may still
+        Under item-cache-first semantics, invalidating a vector node with recursive=True
+        clears its cached item subgraph as well, otherwise a rerun may still
         hit item caches and appear non-invalidated.
         """
+        if not recursive:
+            if root.cache:
+                self.cache.delete(cache_namespace(root), root._hash)
+            return
         stack: list[Node] = [root]
         seen: set[int] = set()
         while stack:
