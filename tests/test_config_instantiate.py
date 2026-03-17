@@ -60,32 +60,6 @@ def test_instantiate_dependency(runtime_factory):
     assert n() == 20
 
 
-def test_instantiate_resolves_presets(runtime_factory):
-    @node.define()
-    def add(x: int, y: int) -> int:
-        return x + y
-
-    module_name = __name__
-    this_module = sys.modules[module_name]
-    setattr(this_module, "add", add)
-
-    cfg = {
-        "sum_node": {
-            "_target_": f"{module_name}.add",
-            "x": 2,
-            "_use_": "large",
-            "_presets_": {
-                "small": {"y": 1},
-                "large": {"y": 10},
-            },
-        }
-    }
-    runtime_factory(config=Config(cfg))
-
-    n = node.instantiate("sum_node")
-    assert n() == 12
-
-
 def test_instantiate_invalid_config(runtime_factory):
     @node.define()
     def noop(x: int) -> int:
@@ -131,8 +105,8 @@ def test_instantiate_sweep_top_level(runtime_factory):
     n = node.instantiate(
         "eval_node",
         sweep={
-            "basis": ["ahsh", "poly"],
-            "degree": [1, 2, 3],
+            "eval_node.basis": ["ahsh", "poly"],
+            "eval_node.degree": [1, 2, 3],
         },
     )
     result = n()
@@ -182,13 +156,13 @@ def test_instantiate_sweep_dotted_path_with_existing_dimension(runtime_factory):
     n = node.instantiate(
         "eval_node",
         sweep={
-            "trop_ls.basis": ["ahsh", "poly"],
-            "trop_ls.degree": [1, 2],
+            "eval_node.trop_ls.basis": ["ahsh", "poly"],
+            "eval_node.trop_ls.degree": [1, 2],
         },
     )
     result = n()
 
-    assert result.dims == ("sweep_trop_ls_basis", "sweep_trop_ls_degree", "time")
+    assert result.dims == ("sweep_basis", "sweep_degree", "time")
     assert result.shape == (2, 2, 2)
     assert result[1, 1, 0] == "poly:2:10"
 
@@ -261,3 +235,77 @@ def test_instantiate_sweep_supports_referenced_subnode_config(runtime_factory):
         for dim in result.dims
     )
     assert result[index] == "poly:3:7:G0|h=1"
+
+
+def test_instantiate_sweep_cross_dependency(runtime_factory):
+    @node.define()
+    def design_matrix(basis: str) -> str:
+        return f"dm:{basis}"
+
+    @node.define()
+    def regressor(design_matrix: str, degree: int) -> str:
+        return f"reg[{design_matrix}|deg={degree}]"
+
+    @node.define()
+    def root(regressor: str, design_matrix: str) -> str:
+        return f"{regressor}=>{design_matrix}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "design_matrix", design_matrix)
+    setattr(this_module, "regressor", regressor)
+    setattr(this_module, "root", root)
+
+    cfg = {
+        "design_matrix": {
+            "_target_": f"{module_name}.design_matrix",
+            "basis": "poly",
+        },
+        "regressor": {
+            "_target_": f"{module_name}.regressor",
+            "design_matrix": "${design_matrix}",
+            "degree": 1,
+        },
+        "root": {
+            "_target_": f"{module_name}.root",
+            "regressor": "${regressor}",
+            "design_matrix": "${design_matrix}",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "root",
+        sweep={
+            "design_matrix.basis": ["poly", "ahsh"],
+            "regressor.degree": [1, 2, 3],
+        },
+    )
+    result = n()
+
+    assert result.dims == ("sweep_basis", "sweep_degree")
+    assert result.shape == (2, 3)
+    assert result[0, 0] == "reg[dm:poly|deg=1]=>dm:poly"
+    assert result[1, 2] == "reg[dm:ahsh|deg=3]=>dm:ahsh"
+
+
+def test_instantiate_resolves_nested_mapping_interpolation_without_sweep(runtime_factory):
+    @node.define()
+    def build_payload(payload: dict[str, int]) -> int:
+        return payload["year"]
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "build_payload", build_payload)
+
+    cfg = {
+        "year": 2026,
+        "payload_node": {
+            "_target_": f"{module_name}.build_payload",
+            "payload": {"year": "${year}"},
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate("payload_node")
+    assert n() == 2026

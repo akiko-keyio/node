@@ -293,8 +293,8 @@ load_data()()  # 使用修改后的值
 grid = node.instantiate(
     "train",
     sweep={
-        "optimizer": ["adam", "sgd"],
-        "lr": [0.01, 0.001, 0.0001],
+        "train.optimizer": ["adam", "sgd"],
+        "train.lr": [0.01, 0.001, 0.0001],
     },
 )
 result = grid()  # shape=(2, 3), dims=("sweep_optimizer", "sweep_lr")
@@ -302,8 +302,8 @@ result = grid()  # shape=(2, 3), dims=("sweep_optimizer", "sweep_lr")
 
 sweep 适合超参数扫描、消融实验等临时实验维度；长期存在的业务维度建议用
 @node.dimension() 定义。返回值仍然是普通 Node，可继续参与 DAG、缓存与
-下游广播。每个扫描参数生成一个 sweep_* 维度，如果被扫描的参数来自
-\ 引用，sweep 会下钻到子节点配置中实例化。
+下游广播。每个扫描参数生成一个 sweep_* 维度。`sweep` 的 key 必须是全局
+配置路径（`section.param` 形式），框架会在一次 DAG 构建中自动广播所有组合。
 
 **变量引用**
 
@@ -330,27 +330,6 @@ process:
   threshold: 0.5
 ```
 
-
-**预设（Presets）**
-
-为同一节点定义多套参数配置，运行时切换：
-
-```yaml
-train:
-  learning_rate: 0.01
-  epochs: 100
-  _use_: dev           # 当前使用的预设
-  _presets_:
-    dev:  { epochs: 10 }       # 开发：快速迭代
-    prod: { epochs: 1000 }     # 生产：完整训练
-```
-
-```python
-train()()  # epochs=10（使用 dev 预设）
-
-node.cfg.train._use_ = "prod"
-train()()  # epochs=1000（切换到 prod 预设）
-```
 
 ---
 

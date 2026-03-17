@@ -240,25 +240,6 @@ process:
   data: ${load_data}  # 自动构建 load_data 节点并注入
 ```
 
-**预设**
-
-```yaml
-train:
-  learning_rate: 0.01
-  epochs: 100
-  _use_: dev
-  _presets_:
-    dev:  { epochs: 10 }
-    prod: { epochs: 1000 }
-```
-
-```python
-train()()  # epochs=10
-
-node.cfg.train._use_ = "prod"
-train()()  # epochs=1000
-```
-
 ---
 
 ## 多维计算

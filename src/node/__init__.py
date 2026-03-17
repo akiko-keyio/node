@@ -44,7 +44,8 @@ def instantiate(name: str, *, sweep: Mapping[str, Any] | None = None) -> Node:
     bound configuration; later ``node.cfg`` updates do not retroactively change it.
     Re-run ``instantiate()`` after config edits if you want a new bound node.
     When ``sweep`` is provided, instantiate returns a dimensioned node over the
-    Cartesian product of sweep values.
+    Cartesian product of sweep values. Sweep keys use global config paths such as
+    ``"train.optimizer"`` or ``"trop_ls.degree"``.
     """
     runtime = get_runtime()
     return runtime.config.instantiate(name, runtime=runtime, sweep=sweep)

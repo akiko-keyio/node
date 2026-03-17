@@ -117,24 +117,6 @@ process_data:
   threshold: 0.5
 ```
 
-### 4.2 使用预设 (Presets) 管理环境
-利用 `_presets_` 和 `_use_` 机制在开发 (Dev) 和生产 (Prod) 环境间无缝切换。
-
-```yaml
-train_model:
-  _target_: my_module.nodes.train
-  _use_: dev
-  _presets_:
-    dev:
-      epochs: 10
-      batch_size: 32
-    prod:
-      epochs: 1000
-      batch_size: 256
-```
-
-运行时可通过 `node.cfg.train_model._use_ = "prod"` 动态切换，无需修改代码。
-
 ## 5. 性能与缓存 (Performance & Caching)
 
 ### 5.1 使用 `ignore` 排除非功能参数
