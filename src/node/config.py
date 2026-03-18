@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 __all__ = ["Config"]
 
+_TOPLEVEL_SECTION = "__toplevel__"
+
 
 class Config:
     """Store default arguments for tasks using OmegaConf.
@@ -75,6 +77,8 @@ class Config:
     ) -> Any:
         if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
             key = val[2:-1]
+            if overrides and (_TOPLEVEL_SECTION, key) in overrides:
+                return overrides[(_TOPLEVEL_SECTION, key)]
             if key in self._conf:
                 cfg_val = self._conf[key]
                 if OmegaConf.is_dict(cfg_val) and "_target_" in cfg_val:
@@ -125,7 +129,14 @@ class Config:
         self,
         sweep: Mapping[str, Any],
     ) -> dict[tuple[str, str], "Node"]:
-        """Build section-param overrides from global sweep paths."""
+        """Build section-param overrides from global sweep paths.
+
+        Sweep keys may be either ``"section.param"`` (targeting a specific
+        parameter inside a section) or a single top-level scalar name such as
+        ``"ref_height"``.  Top-level scalar sweeps are stored with the sentinel
+        section :data:`_TOPLEVEL_SECTION` and are resolved lazily in
+        :meth:`_resolve_value` whenever ``${key}`` interpolation is encountered.
+        """
         from .exceptions import ConfigurationError
 
         sentinel = object()
@@ -138,10 +149,36 @@ class Config:
                 )
             path = raw_path.strip()
             parts = [p for p in path.split(".") if p]
-            if len(parts) < 2:
-                raise ConfigurationError(
-                    f"Invalid sweep key '{path}'. Use global config path like 'section.param'."
+
+            try:
+                axis_values = self._normalize_sweep_axis_values(raw_values)
+            except ValueError as e:
+                raise ConfigurationError(f"Invalid sweep values for '{path}': {e}") from e
+
+            if len(parts) == 1:
+                key = parts[0]
+                if key not in self._conf:
+                    raise ConfigurationError(
+                        f"Invalid sweep key '{path}': key not found in config."
+                    )
+                if OmegaConf.is_dict(self._conf[key]):
+                    raise ConfigurationError(
+                        f"Invalid sweep key '{path}': top-level key '{key}' is a "
+                        "mapping, not a scalar. Use 'section.param' to sweep "
+                        "parameters within a section."
+                    )
+                dim_name = f"sweep_{key}"
+                previous = dim_to_path.get(dim_name)
+                if previous is not None and previous != path:
+                    raise ConfigurationError(
+                        f"Sweep dimension name collision: '{previous}' and '{path}' "
+                        f"both map to '{dim_name}'."
+                    )
+                dim_to_path[dim_name] = path
+                overrides[(_TOPLEVEL_SECTION, key)] = self._build_sweep_axis_node(
+                    dim_name, axis_values
                 )
+                continue
 
             section = parts[0]
             param_path = ".".join(parts[1:])
@@ -153,11 +190,6 @@ class Config:
             current = OmegaConf.select(self._conf[section], param_path, default=sentinel)
             if current is sentinel:
                 raise ConfigurationError(f"Invalid sweep key '{path}': path does not exist.")
-
-            try:
-                axis_values = self._normalize_sweep_axis_values(raw_values)
-            except ValueError as e:
-                raise ConfigurationError(f"Invalid sweep values for '{path}': {e}") from e
 
             leaf = parts[-1]
             dim_name = f"sweep_{leaf}"
@@ -320,10 +352,13 @@ class Config:
             Runtime used to resolve nested ``${...}`` references to nodes.
             If omitted, use the global runtime.
         sweep:
-            Optional parameter sweep mapping. Keys are global config paths
-            (``"section.param"``, e.g. ``"trop_ls.degree"``) and values are
-            candidate collections. Passing sweep returns a dimensioned node
-            covering the Cartesian product of sweep values.
+            Optional parameter sweep mapping. Keys are either global config
+            paths (``"section.param"``, e.g. ``"trop_ls.degree"``) or top-level
+            scalar names (e.g. ``"ref_height"``).  Values are candidate
+            collections.  Passing sweep returns a dimensioned node covering the
+            Cartesian product of sweep values.  Top-level scalar sweeps are
+            propagated through ``${...}`` interpolation, so all nodes referencing
+            the swept key share the same sweep dimension.
 
         Notes
         -----

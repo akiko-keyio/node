@@ -311,6 +311,169 @@ def test_instantiate_resolves_nested_mapping_interpolation_without_sweep(runtime
     assert n() == 2026
 
 
+def test_instantiate_sweep_toplevel_scalar(runtime_factory):
+    """Sweep a top-level scalar referenced via ${...} interpolation."""
+
+    @node.define()
+    def station(target: int) -> str:
+        return f"station:{target}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "station", station)
+
+    cfg = {
+        "ref_height": 1000,
+        "station_node": {
+            "_target_": f"{module_name}.station",
+            "target": "${ref_height}",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate("station_node", sweep={"ref_height": [0, 1000, 5000]})
+    result = n()
+    assert result.dims == ("sweep_ref_height",)
+    assert result.shape == (3,)
+    assert result[0] == "station:0"
+    assert result[1] == "station:1000"
+    assert result[2] == "station:5000"
+
+
+def test_instantiate_sweep_toplevel_scalar_shared_by_multiple_nodes(runtime_factory):
+    """Multiple nodes referencing the same top-level scalar stay synchronized."""
+
+    @node.define()
+    def station_factor(target: int) -> str:
+        return f"station:{target}"
+
+    @node.define()
+    def grid_factor(target: int) -> str:
+        return f"grid:{target}"
+
+    @node.define()
+    def combine(station: str, grid: str) -> str:
+        return f"{station}+{grid}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "station_factor", station_factor)
+    setattr(this_module, "grid_factor", grid_factor)
+    setattr(this_module, "combine", combine)
+
+    cfg = {
+        "ref_height": 1000,
+        "station_factor": {
+            "_target_": f"{module_name}.station_factor",
+            "target": "${ref_height}",
+        },
+        "grid_factor": {
+            "_target_": f"{module_name}.grid_factor",
+            "target": "${ref_height}",
+        },
+        "combine": {
+            "_target_": f"{module_name}.combine",
+            "station": "${station_factor}",
+            "grid": "${grid_factor}",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate("combine", sweep={"ref_height": [0, 1000, 5000]})
+    result = n()
+    assert result.dims == ("sweep_ref_height",)
+    assert result.shape == (3,)
+    assert result[0] == "station:0+grid:0"
+    assert result[1] == "station:1000+grid:1000"
+    assert result[2] == "station:5000+grid:5000"
+
+
+def test_instantiate_sweep_toplevel_with_section_param(runtime_factory):
+    """Top-level scalar sweep combined with section.param sweep → Cartesian."""
+
+    @node.define()
+    def evaluate(height: int, basis: str) -> str:
+        return f"{basis}@{height}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "evaluate", evaluate)
+
+    cfg = {
+        "ref_height": 1000,
+        "eval_node": {
+            "_target_": f"{module_name}.evaluate",
+            "height": "${ref_height}",
+            "basis": "ahsh",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "eval_node",
+        sweep={
+            "ref_height": [0, 5000],
+            "eval_node.basis": ["ahsh", "poly", "spline"],
+        },
+    )
+    result = n()
+    assert set(result.dims) == {"sweep_ref_height", "sweep_basis"}
+    shape_by_dim = dict(zip(result.dims, result.shape, strict=True))
+    assert shape_by_dim == {"sweep_ref_height": 2, "sweep_basis": 3}
+    idx_h = result.dims.index("sweep_ref_height")
+    idx_b = result.dims.index("sweep_basis")
+    idx = [0, 0]
+    idx[idx_h] = 1
+    idx[idx_b] = 2
+    assert result[tuple(idx)] == "spline@5000"
+
+
+def test_instantiate_sweep_toplevel_rejects_mapping_key(runtime_factory):
+    """Sweeping a top-level key that is a mapping (section) should error."""
+
+    @node.define()
+    def noop(x: int) -> int:
+        return x
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "noop", noop)
+
+    cfg = {
+        "my_section": {
+            "_target_": f"{module_name}.noop",
+            "x": 1,
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    with pytest.raises(ConfigurationError, match="mapping, not a scalar"):
+        node.instantiate("my_section", sweep={"my_section": [1, 2]})
+
+
+def test_instantiate_sweep_toplevel_rejects_missing_key(runtime_factory):
+    """Sweeping a non-existent top-level key should error."""
+
+    @node.define()
+    def noop(x: int) -> int:
+        return x
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "noop", noop)
+
+    cfg = {
+        "my_section": {
+            "_target_": f"{module_name}.noop",
+            "x": 1,
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    with pytest.raises(ConfigurationError, match="key not found"):
+        node.instantiate("my_section", sweep={"nonexistent": [1, 2]})
+
+
 def test_instantiate_sweep_axis_value_change_rebuilds_graph(runtime_factory):
     @node.define()
     def score(basis: str, l_max: int) -> str:

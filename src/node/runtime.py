@@ -52,7 +52,7 @@ def configure(
     executor: Literal["thread"] = "thread",
     workers: int = 4,
     reporter: Any = None,
-    continue_on_error: bool = True,
+    continue_on_error: bool = False,
     validate: bool = True,
     limit_inner_parallelism: bool = True,
 ) -> "Runtime":
@@ -71,7 +71,8 @@ def configure(
     reporter:
         Progress reporter instance.
     continue_on_error:
-        If True, continue execution when nodes fail.
+        If True, continue execution when nodes fail. Defaults to False
+        (fail-fast) so exceptions propagate immediately for easier debugging.
     validate:
         If True, use pydantic to validate function arguments.
     limit_inner_parallelism:
@@ -122,7 +123,7 @@ class Runtime:
         executor: Literal["thread"] = "thread",
         workers: int = 4,
         reporter: Any = None,
-        continue_on_error: bool = True,
+        continue_on_error: bool = False,
         validate: bool = True,
         limit_inner_parallelism: bool = True,
     ):
