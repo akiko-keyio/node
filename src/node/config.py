@@ -102,14 +102,18 @@ class Config:
     def _build_sweep_axis_node(self, dim_name: str, values: list[Any]) -> "Node":
         """Build one axis node used by instantiate(sweep=...)."""
         from .core import Node
+
         def _axis_stub() -> None:
             return None
 
         _axis_stub.__name__ = f"instantiate_sweep_dim_{dim_name}"
         _axis_stub._node_ignore = frozenset()  # type: ignore[attr-defined]
+        # Keep axis values in inputs so node identity/cache key changes when
+        # sweep values change across instantiate() calls.
+        axis_signature = tuple(values)
         axis_node = Node(
             fn=_axis_stub,
-            inputs={},
+            inputs={"_axis_values": axis_signature},
             cache=True,
             dims=(dim_name,),
             coords={dim_name: values},

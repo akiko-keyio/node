@@ -309,3 +309,44 @@ def test_instantiate_resolves_nested_mapping_interpolation_without_sweep(runtime
 
     n = node.instantiate("payload_node")
     assert n() == 2026
+
+
+def test_instantiate_sweep_axis_value_change_rebuilds_graph(runtime_factory):
+    @node.define()
+    def score(basis: str, l_max: int) -> str:
+        return f"{basis}:{l_max}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "score", score)
+
+    cfg = {
+        "trop_eval_ls": {
+            "_target_": f"{module_name}.score",
+            "basis": "poly",
+            "l_max": 1,
+        }
+    }
+    runtime_factory(config=Config(cfg))
+
+    n_small = node.instantiate(
+        "trop_eval_ls",
+        sweep={
+            "trop_eval_ls.basis": ["poly", "ahsh"],
+            "trop_eval_ls.l_max": list(range(1, 5)),
+        },
+    )
+    result_small = n_small()
+    assert result_small.shape == (2, 4)
+    assert result_small[1, 3] == "ahsh:4"
+
+    n_large = node.instantiate(
+        "trop_eval_ls",
+        sweep={
+            "trop_eval_ls.basis": ["poly", "ahsh"],
+            "trop_eval_ls.l_max": list(range(1, 41)),
+        },
+    )
+    result_large = n_large()
+    assert result_large.shape == (2, 40)
+    assert result_large[1, 39] == "ahsh:40"
