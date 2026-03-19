@@ -23,10 +23,9 @@ from rich.progress import (  # type: ignore[import]
     TimeRemainingColumn,
 )
 from rich.spinner import Spinner  # type: ignore[import]
-from rich.syntax import Syntax  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 
-from .core import Node, _render_call, build_graph
+from .core import Node, build_graph
 from .logger import console as _console
 
 if TYPE_CHECKING:
@@ -234,15 +233,9 @@ class _ReporterCtx:
     # -- Callbacks ------------------------------------------------------------
 
     def _on_start(self, n: Node) -> None:
-        call = n.script_lines[-1][-1] if self.cfg.show_script_line \
-            else _render_call(n.fn, n.inputs)
-        label = Syntax(
-            call, "python",
-            theme="abap" if IN_JUPYTER else "ansi_dark",
-            background_color="default",
-        ).highlight(call)
-        label.rstrip()
-        self._queue(("S", n._hash, label, time.perf_counter()))
+        # Keep start events lightweight: the current UI renders per-function rows
+        # and does not consume per-node rich labels.
+        self._queue(("S", n._hash, time.perf_counter()))
         _track_ctx.ctx = self
         _track_ctx.node = n._hash
         self.current_node = n._hash
@@ -302,7 +295,7 @@ class _ReporterCtx:
                 break
             kind = msg[0]
             if kind == "S":
-                _, k, _label, ts = msg
+                _, k, ts = msg
                 fn = self.node_fn.get(k)
                 if fn:
                     st = self.stats[fn]
