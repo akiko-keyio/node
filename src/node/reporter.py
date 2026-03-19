@@ -114,7 +114,6 @@ class _ReporterCtx:
         "cache_writing": "writing",
     }
     _STATE_ORDER = ("executing", "cache_writing", "cache_reading")
-    _LAST_ACTIVE_TTL = 1.0
 
     def __init__(
         self,
@@ -129,6 +128,7 @@ class _ReporterCtx:
         self.root = root
         self._order = order
         self.q: SimpleQueue = SimpleQueue()
+        self._wake = threading.Event()
 
         self.stats: dict[str, _Stats] = {}
         self.task_order: list[str] = []
@@ -138,7 +138,6 @@ class _ReporterCtx:
 
         self.node_fn: dict[int, str] = {}
         self.node_states: dict[int, str] = {}
-        self.last_active: tuple[str, str, float] | None = None
 
         self.tracks: dict[str, tuple[Progress, int, int]] = {}
         self.node_tracks: dict[int, set[str]] = {}
@@ -151,6 +150,11 @@ class _ReporterCtx:
             self._done_char = "*"
 
     # -- State helpers --------------------------------------------------------
+
+    def _queue(self, msg: tuple[Any, ...]) -> None:
+        """Push one reporter event and wake the render loop."""
+        self.q.put(msg)
+        self._wake.set()
 
     def _adjust_state(self, node_key: int, new_state: str | None) -> None:
         """Transition *node_key* to *new_state* (or remove if ``None``)."""
@@ -171,9 +175,6 @@ class _ReporterCtx:
         if new_state is not None and new_state != prev:
             self.node_states[node_key] = new_state
             st.state_counts[new_state] = st.state_counts.get(new_state, 0) + 1
-            if new_state in self._STATE_ORDER:
-                label = self._STATE_LABELS.get(new_state, new_state.replace("_", " "))
-                self.last_active = (fn, label, time.perf_counter())
 
     # -- Context manager ------------------------------------------------------
 
@@ -199,6 +200,7 @@ class _ReporterCtx:
                 self.stats[fn] = _Stats()
                 self.task_order.append(fn)
             self.stats[fn].total += 1
+            self._adjust_state(node._hash, "waiting")
 
         self.live = Live(
             self._render(),
@@ -214,6 +216,7 @@ class _ReporterCtx:
 
     def __exit__(self, *exc_info):
         self._stop.set()
+        self._wake.set()
         self._thread.join()
         self._drain()
         final = self._render(final=True)
@@ -239,7 +242,7 @@ class _ReporterCtx:
             background_color="default",
         ).highlight(call)
         label.rstrip()
-        self.q.put(("S", n._hash, label, time.perf_counter()))
+        self._queue(("S", n._hash, label, time.perf_counter()))
         _track_ctx.ctx = self
         _track_ctx.node = n._hash
         self.current_node = n._hash
@@ -247,24 +250,24 @@ class _ReporterCtx:
             self._orig[0](n)
 
     def _on_end(self, n: Node, dur: float, cached: bool, failed: bool) -> None:
-        self.q.put(("E", n._hash, dur, cached, failed))
+        self._queue(("E", n._hash, dur, cached, failed))
         if getattr(_track_ctx, "ctx", None) is self:
             _track_ctx.ctx = _track_ctx.node = None
         ids = self.node_tracks.get(n._hash)
         if ids:
             for tid in list(ids):
-                self.q.put(("TE", tid))
+                self._queue(("TE", tid))
         self.current_node = None
         if self._orig[1]:
             self._orig[1](n, dur, cached, failed)
 
     def _on_state(self, n: Node, state: str) -> None:
-        self.q.put(("T", n._hash, state))
+        self._queue(("T", n._hash, state))
         if self._orig[2]:
             self._orig[2](n, state)
 
     def _on_flow(self, root: Node, wall: float, count: int, fails: int) -> None:
-        self.q.put(("F", wall))
+        self._queue(("F", wall))
         if self._orig[3]:
             self._orig[3](root, wall, count, fails)
 
@@ -275,20 +278,21 @@ class _ReporterCtx:
         while not self._stop.is_set():
             self._drain()
             self.live.update(self._render())
-            time.sleep(interval)
+            self._wake.wait(interval)
+            self._wake.clear()
         self._drain()
 
     def track(
         self, sequence: Iterable[Any], description: str, total: int | None
     ) -> Generator[Any, None, None]:
         tid = f"{time.perf_counter()}-{threading.get_ident()}"
-        self.q.put(("TS", tid, self.current_node or 0, description, total))
+        self._queue(("TS", tid, self.current_node or 0, description, total))
         count = 0
         for item in sequence:
             yield item
             count += 1
-            self.q.put(("TU", tid, count))
-        self.q.put(("TE", tid))
+            self._queue(("TU", tid, count))
+        self._queue(("TE", tid))
 
     def _drain(self) -> None:
         while True:
@@ -386,17 +390,11 @@ class _ReporterCtx:
         spin = self.spinner.render(now)
         spin.style = "orange1"
         lines: list[Text] = []
-        has_active = False
 
         for fn in self.task_order:
             st = self.stats[fn]
             if st.total <= 0:
                 continue
-            has_visible_state = any(
-                st.state_counts.get(s, 0) > 0 for s in self._STATE_ORDER
-            )
-            if has_visible_state:
-                has_active = True
 
             done = st.completed >= st.total and st.running == 0
             dur = 0.0
@@ -409,7 +407,10 @@ class _ReporterCtx:
                     (str(st.total), "blue"), " ", fn, " ",
                     (f"[{self._fmt_dur(dur)}]", "blue"),
                 ))
-            elif st.running == 0 and not has_visible_state:
+            elif all(
+                s == "waiting" or c <= 0
+                for s, c in st.state_counts.items()
+            ) and st.state_counts.get("waiting", 0) > 0:
                 lines.append(Text.assemble(
                     "~ ", f"{st.completed}/{st.total} ", fn,
                 ))
@@ -429,11 +430,6 @@ class _ReporterCtx:
                 parts += [" ", (time_str, "bold orange1")]
                 lines.append(Text.assemble(*parts))
 
-        if not final and lines and not has_active:
-            hint = self._last_active_hint(now)
-            if hint is not None:
-                lines.insert(0, hint)
-
         return Group(*lines)
 
     def _state_summary(self, st: _Stats) -> str:
@@ -445,17 +441,3 @@ class _ReporterCtx:
             label = self._STATE_LABELS.get(state, state.replace("_", " "))
             parts.append(label if c == 1 else f"{label} x{c}")
         return ", ".join(parts)
-
-    def _last_active_hint(self, now: float) -> Text | None:
-        if self.last_active is None:
-            return None
-        fn, state, ts = self.last_active
-        age = now - ts
-        if age > self._LAST_ACTIVE_TTL:
-            return None
-        return Text.assemble(
-            ("last active: ", "orange1"),
-            (fn, "orange1"),
-            (" ", "orange1"),
-            (f"({state}, {age:.1f}s ago)", "orange1"),
-        )

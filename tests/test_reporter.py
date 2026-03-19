@@ -1,7 +1,5 @@
 """Tests for RichReporter functionality."""
 
-import time
-
 import node
 from node.reporter import RichReporter, _ReporterCtx
 
@@ -68,7 +66,7 @@ def test_state_tracking_updates_counts():
     ctx.__enter__()
 
     fn_name = ctx.root.fn.__name__
-    assert ctx.stats[fn_name].state_counts == {}
+    assert ctx.stats[fn_name].state_counts == {"waiting": 1}
 
     ctx._on_state(ctx.root, "cache_reading")
     ctx._drain()
@@ -86,42 +84,16 @@ def test_state_tracking_updates_counts():
 
 
 def test_waiting_only_row_uses_compact_format():
-    """Idle rows should use the compact placeholder format."""
+    """Waiting-only rows should hide spinner/state/duration."""
     ctx = _make_ctx()
     ctx.__enter__()
 
-    lines = [line.plain for line in ctx._render().renderables]
+    lines = ctx._render().renderables
     assert len(lines) == 1
-    plain = lines[0]
+    plain = lines[0].plain
     assert plain.startswith("~ ")
+    assert "(waiting" not in plain
     assert "[" not in plain
-
-    ctx.__exit__(None, None, None)
-
-
-def test_last_active_hint_shown_for_short_gap():
-    """Recent active work should be shown during brief empty gaps."""
-    ctx = _make_ctx()
-    ctx.__enter__()
-    ctx._on_state(ctx.root, "executing")
-    ctx._drain()
-    ctx._on_state(ctx.root, "waiting")
-    ctx._drain()
-
-    lines = [line.plain for line in ctx._render().renderables]
-    assert lines[0].startswith("last active: dummy (executing, ")
-
-    ctx.__exit__(None, None, None)
-
-
-def test_last_active_hint_expires():
-    """Recent activity hint should disappear after the short TTL."""
-    ctx = _make_ctx()
-    ctx.__enter__()
-    ctx.last_active = ("dummy", "executing", time.perf_counter() - 5)
-
-    lines = [line.plain for line in ctx._render().renderables]
-    assert not any(line.startswith("last active:") for line in lines)
 
     ctx.__exit__(None, None, None)
 
@@ -130,3 +102,13 @@ def test_state_labels_use_reading_writing_names():
     """State labels should use short reading/writing names."""
     assert _ReporterCtx._STATE_LABELS["cache_reading"] == "reading"
     assert _ReporterCtx._STATE_LABELS["cache_writing"] == "writing"
+
+
+def test_queue_sets_wake_event():
+    """Queueing reporter events should wake render loop promptly."""
+    ctx = _make_ctx()
+    assert not ctx._wake.is_set()
+
+    ctx._queue(("X",))
+
+    assert ctx._wake.is_set()
