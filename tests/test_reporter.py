@@ -68,7 +68,7 @@ def test_state_tracking_updates_counts():
     ctx.__enter__()
 
     fn_name = ctx.root.fn.__name__
-    assert ctx.stats[fn_name].state_counts == {"waiting": 1}
+    assert ctx.stats[fn_name].state_counts == {}
 
     ctx._on_state(ctx.root, "cache_reading")
     ctx._drain()
@@ -86,7 +86,7 @@ def test_state_tracking_updates_counts():
 
 
 def test_waiting_only_row_uses_compact_format():
-    """Waiting-only rows should hide per-task reason in compact mode."""
+    """Idle rows should use the compact placeholder format."""
     ctx = _make_ctx()
     ctx.__enter__()
 

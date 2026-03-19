@@ -199,7 +199,6 @@ class _ReporterCtx:
                 self.stats[fn] = _Stats()
                 self.task_order.append(fn)
             self.stats[fn].total += 1
-            self._adjust_state(node._hash, "waiting")
 
         self.live = Live(
             self._render(),
@@ -393,7 +392,10 @@ class _ReporterCtx:
             st = self.stats[fn]
             if st.total <= 0:
                 continue
-            if any(st.state_counts.get(s, 0) > 0 for s in self._STATE_ORDER):
+            has_visible_state = any(
+                st.state_counts.get(s, 0) > 0 for s in self._STATE_ORDER
+            )
+            if has_visible_state:
                 has_active = True
 
             done = st.completed >= st.total and st.running == 0
@@ -407,10 +409,7 @@ class _ReporterCtx:
                     (str(st.total), "blue"), " ", fn, " ",
                     (f"[{self._fmt_dur(dur)}]", "blue"),
                 ))
-            elif all(
-                s == "waiting" or c <= 0
-                for s, c in st.state_counts.items()
-            ) and st.state_counts.get("waiting", 0) > 0:
+            elif st.running == 0 and not has_visible_state:
                 lines.append(Text.assemble(
                     "~ ", f"{st.completed}/{st.total} ", fn,
                 ))
