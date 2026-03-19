@@ -1,5 +1,7 @@
 """Tests for RichReporter functionality."""
 
+import time
+
 import node
 from node.reporter import RichReporter, _ReporterCtx
 
@@ -84,16 +86,42 @@ def test_state_tracking_updates_counts():
 
 
 def test_waiting_only_row_uses_compact_format():
-    """Waiting-only rows should show scheduling state in compact mode."""
+    """Waiting-only rows should hide per-task reason in compact mode."""
     ctx = _make_ctx()
     ctx.__enter__()
 
-    lines = ctx._render().renderables
+    lines = [line.plain for line in ctx._render().renderables]
     assert len(lines) == 1
-    plain = lines[0].plain
+    plain = lines[0]
     assert plain.startswith("~ ")
-    assert "(scheduling)" in plain
     assert "[" not in plain
+
+    ctx.__exit__(None, None, None)
+
+
+def test_last_active_hint_shown_for_short_gap():
+    """Recent active work should be shown during brief empty gaps."""
+    ctx = _make_ctx()
+    ctx.__enter__()
+    ctx._on_state(ctx.root, "executing")
+    ctx._drain()
+    ctx._on_state(ctx.root, "waiting")
+    ctx._drain()
+
+    lines = [line.plain for line in ctx._render().renderables]
+    assert lines[0].startswith("last active: dummy (executing, ")
+
+    ctx.__exit__(None, None, None)
+
+
+def test_last_active_hint_expires():
+    """Recent activity hint should disappear after the short TTL."""
+    ctx = _make_ctx()
+    ctx.__enter__()
+    ctx.last_active = ("dummy", "executing", time.perf_counter() - 5)
+
+    lines = [line.plain for line in ctx._render().renderables]
+    assert not any(line.startswith("last active:") for line in lines)
 
     ctx.__exit__(None, None, None)
 

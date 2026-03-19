@@ -114,6 +114,7 @@ class _ReporterCtx:
         "cache_writing": "writing",
     }
     _STATE_ORDER = ("executing", "cache_writing", "cache_reading")
+    _LAST_ACTIVE_TTL = 1.0
 
     def __init__(
         self,
@@ -137,6 +138,7 @@ class _ReporterCtx:
 
         self.node_fn: dict[int, str] = {}
         self.node_states: dict[int, str] = {}
+        self.last_active: tuple[str, str, float] | None = None
 
         self.tracks: dict[str, tuple[Progress, int, int]] = {}
         self.node_tracks: dict[int, set[str]] = {}
@@ -169,6 +171,9 @@ class _ReporterCtx:
         if new_state is not None and new_state != prev:
             self.node_states[node_key] = new_state
             st.state_counts[new_state] = st.state_counts.get(new_state, 0) + 1
+            if new_state in self._STATE_ORDER:
+                label = self._STATE_LABELS.get(new_state, new_state.replace("_", " "))
+                self.last_active = (fn, label, time.perf_counter())
 
     # -- Context manager ------------------------------------------------------
 
@@ -382,11 +387,14 @@ class _ReporterCtx:
         spin = self.spinner.render(now)
         spin.style = "orange1"
         lines: list[Text] = []
+        has_active = False
 
         for fn in self.task_order:
             st = self.stats[fn]
             if st.total <= 0:
                 continue
+            if any(st.state_counts.get(s, 0) > 0 for s in self._STATE_ORDER):
+                has_active = True
 
             done = st.completed >= st.total and st.running == 0
             dur = 0.0
@@ -404,8 +412,7 @@ class _ReporterCtx:
                 for s, c in st.state_counts.items()
             ) and st.state_counts.get("waiting", 0) > 0:
                 lines.append(Text.assemble(
-                    "~ ", f"{st.completed}/{st.total} ", fn, " ",
-                    ("(scheduling)", "orange1"),
+                    "~ ", f"{st.completed}/{st.total} ", fn,
                 ))
             else:
                 parts: list[str | Text | tuple[str, str]] = [
@@ -423,6 +430,11 @@ class _ReporterCtx:
                 parts += [" ", (time_str, "bold orange1")]
                 lines.append(Text.assemble(*parts))
 
+        if not final and lines and not has_active:
+            hint = self._last_active_hint(now)
+            if hint is not None:
+                lines.insert(0, hint)
+
         return Group(*lines)
 
     def _state_summary(self, st: _Stats) -> str:
@@ -434,3 +446,17 @@ class _ReporterCtx:
             label = self._STATE_LABELS.get(state, state.replace("_", " "))
             parts.append(label if c == 1 else f"{label} x{c}")
         return ", ".join(parts)
+
+    def _last_active_hint(self, now: float) -> Text | None:
+        if self.last_active is None:
+            return None
+        fn, state, ts = self.last_active
+        age = now - ts
+        if age > self._LAST_ACTIVE_TTL:
+            return None
+        return Text.assemble(
+            ("last active: ", "orange1"),
+            (fn, "orange1"),
+            (" ", "orange1"),
+            (f"({state}, {age:.1f}s ago)", "orange1"),
+        )
