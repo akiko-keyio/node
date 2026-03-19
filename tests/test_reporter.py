@@ -83,8 +83,8 @@ def test_state_tracking_updates_counts():
     ctx.__exit__(None, None, None)
 
 
-def test_waiting_only_row_uses_compact_format():
-    """Waiting-only rows should hide spinner/state/duration."""
+def test_never_started_row_uses_compact_format():
+    """Tasks that never started should show ~ placeholder."""
     ctx = _make_ctx()
     ctx.__enter__()
 
@@ -92,8 +92,43 @@ def test_waiting_only_row_uses_compact_format():
     assert len(lines) == 1
     plain = lines[0].plain
     assert plain.startswith("~ ")
-    assert "(waiting" not in plain
     assert "[" not in plain
+
+    ctx.__exit__(None, None, None)
+
+
+def test_started_but_no_active_shows_spinner():
+    """Tasks that started but have no visible active state show spinner."""
+    node.reset()
+    rt = node.configure(validate=False, continue_on_error=False)
+
+    @node.define()
+    def parent():
+        return 1
+
+    @node.define()
+    def child(v):
+        return v
+
+    root = child(v=parent())
+    ctx = RichReporter().attach(rt, root)
+    ctx.__enter__()
+
+    parent_node = [n for n in ctx.node_fn if ctx.node_fn[n] == "parent"][0]
+    from node.core import Node
+    parent_obj = next(n for n in root.deps_nodes if n._hash == parent_node)
+
+    ctx._on_start(parent_obj)
+    ctx._on_state(parent_obj, "executing")
+    ctx._on_end(parent_obj, 0.01, False, False)
+    ctx._drain()
+
+    lines = ctx._render().renderables
+    parent_line = next(
+        line.plain for line in lines if "parent" in line.plain
+    )
+    assert not parent_line.startswith("~ ")
+    assert "[" in parent_line
 
     ctx.__exit__(None, None, None)
 
@@ -106,7 +141,19 @@ def test_state_labels_use_reading_writing_names():
 
 def test_queue_sets_wake_event():
     """Queueing reporter events should wake render loop promptly."""
-    ctx = _make_ctx()
+    node.reset()
+    rt = node.configure(validate=False, continue_on_error=False)
+
+    @node.define()
+    def parent():
+        return 1
+
+    @node.define()
+    def child(v):
+        return v
+
+    root = child(v=parent())
+    ctx = RichReporter().attach(rt, root)
     assert not ctx._wake.is_set()
 
     ctx._queue(("X",))
