@@ -407,7 +407,10 @@ class _ReporterCtx:
                     (str(st.total), "blue"), " ", fn, " ",
                     (f"[{self._fmt_dur(dur)}]", "blue"),
                 ))
-            elif st.first_start is None:
+            elif all(
+                s == "waiting" or c <= 0
+                for s, c in st.state_counts.items()
+            ) and st.state_counts.get("waiting", 0) > 0:
                 lines.append(Text.assemble(
                     "~ ", f"{st.completed}/{st.total} ", fn,
                 ))
