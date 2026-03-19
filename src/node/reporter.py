@@ -404,7 +404,8 @@ class _ReporterCtx:
                 for s, c in st.state_counts.items()
             ) and st.state_counts.get("waiting", 0) > 0:
                 lines.append(Text.assemble(
-                    "~ ", f"{st.completed}/{st.total} ", fn,
+                    "~ ", f"{st.completed}/{st.total} ", fn, " ",
+                    ("(scheduling)", "orange1"),
                 ))
             else:
                 parts: list[str | Text | tuple[str, str]] = [

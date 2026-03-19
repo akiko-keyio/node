@@ -84,7 +84,7 @@ def test_state_tracking_updates_counts():
 
 
 def test_waiting_only_row_uses_compact_format():
-    """Waiting-only rows should hide spinner/state/duration."""
+    """Waiting-only rows should show scheduling state in compact mode."""
     ctx = _make_ctx()
     ctx.__enter__()
 
@@ -92,7 +92,7 @@ def test_waiting_only_row_uses_compact_format():
     assert len(lines) == 1
     plain = lines[0].plain
     assert plain.startswith("~ ")
-    assert "(waiting" not in plain
+    assert "(scheduling)" in plain
     assert "[" not in plain
 
     ctx.__exit__(None, None, None)
