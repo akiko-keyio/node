@@ -4,7 +4,6 @@ from __future__ import annotations
 
 # coverage: ignore-file
 
-import sys
 import threading
 import time
 from collections.abc import Generator, Iterable
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
 __all__ = ["RichReporter", "track"]
 
 _track_ctx = threading.local()
-IN_JUPYTER = "ipykernel" in sys.modules
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +202,7 @@ class _ReporterCtx:
         self.live = Live(
             self._render(),
             refresh_per_second=self.cfg.refresh_per_second,
-            transient=not IN_JUPYTER,
+            transient=True,
             console=self.cfg.console,
         )
         self.live.__enter__()
@@ -221,8 +219,7 @@ class _ReporterCtx:
         final = self._render(final=True)
         self.live.update(final, refresh=True)
         self.live.__exit__(*exc_info)
-        if not IN_JUPYTER:
-            self.live.console.print(final)
+        self.live.console.print(final)
         (
             self.runtime.on_node_start,
             self.runtime.on_node_end,
