@@ -64,11 +64,11 @@ def log_output():
 
     Requires ``ipywidgets`` (``pip install ipywidgets``).
     """
-    from ipywidgets import Output
+    from ipywidgets import HTML
     from IPython.display import display
 
     rt = get_runtime()
-    widget = Output()
+    widget = HTML()
     rt.reporter._log_widget = widget
     display(widget)
     return widget

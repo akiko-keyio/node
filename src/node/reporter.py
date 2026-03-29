@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # coverage: ignore-file
 
+import html
 import io
 import sys
 import threading
@@ -147,6 +148,7 @@ class _ReporterCtx:
         self.node_fn: dict[int, str] = {}
         self.node_states: dict[int, str] = {}
         self._jupyter = False
+        self._log_lock = threading.Lock()
 
         enc = getattr(cfg.console.file, "encoding", None) or "utf-8"
         try:
@@ -218,10 +220,10 @@ class _ReporterCtx:
             self._log_widget = getattr(self.cfg, "_log_widget", None)
             self._log_records: list[str] = []
             if self._log_widget is not None:
-                self._log_widget.clear_output()
-                sink = lambda msg: self._log_widget.append_stdout(str(msg))
+                self._set_log_widget("")
+                sink = self._append_log_record
             else:
-                sink = lambda msg: self._log_records.append(str(msg))
+                sink = self._append_log_record
             self._buf_handler_id = logger.add(
                 sink,
                 level="DEBUG",
@@ -285,6 +287,29 @@ class _ReporterCtx:
         clear_output(wait=True)
         sys.stdout.write(text)
         sys.stdout.flush()
+
+    def _append_log_record(self, msg: Any) -> None:
+        """Record logs and mirror them into the optional notebook log widget."""
+        text = str(msg)
+        with self._log_lock:
+            self._log_records.append(text)
+            if self._log_widget is not None:
+                self._set_log_widget("".join(self._log_records))
+
+    def _set_log_widget(self, text: str) -> None:
+        """Replace notebook log widget content with a scrollable text block."""
+        if self._log_widget is None:
+            return
+        escaped = html.escape(text)
+        self._log_widget.value = (
+            '<div style="max-height:360px;overflow-y:auto;'
+            'border:1px solid #444;padding:8px;border-radius:4px;'
+            'background:#111;">'
+            '<pre style="margin:0;white-space:pre-wrap;line-height:1.35;'
+            "font-family:Menlo,'DejaVu Sans Mono',Consolas,'Courier New',monospace;"
+            'color:#ddd;">'
+            f"{escaped}</pre></div>"
+        )
 
     def _loop_jupyter(self) -> None:
         """Background refresh loop for Jupyter — mirrors Live's auto-refresh."""
