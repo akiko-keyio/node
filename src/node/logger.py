@@ -28,18 +28,33 @@ console = Console(force_terminal=True) if _is_jupyter() else Console()
 # remove default handler
 logger.remove()
 
-# add rich handler
-logger.add(
-    RichHandler(
-        console=console,
-        markup=True,
-        show_time=True,
-        show_level=True,
-        show_path=True,
-    ),
+_RICH_HANDLER_KWARGS: dict = dict(
+    markup=True, show_time=True, show_level=True, show_path=True,
+)
+_handler_id: int | None = logger.add(
+    RichHandler(console=console, **_RICH_HANDLER_KWARGS),
     level="DEBUG",
     format="{message}",
 )
+
+
+def _suspend_rich_handler() -> None:
+    """Remove RichHandler during Live to avoid stdout conflicts."""
+    global _handler_id
+    if _handler_id is not None:
+        logger.remove(_handler_id)
+        _handler_id = None
+
+
+def _restore_rich_handler() -> None:
+    """Re-add RichHandler after Live exits."""
+    global _handler_id
+    if _handler_id is None:
+        _handler_id = logger.add(
+            RichHandler(console=console, **_RICH_HANDLER_KWARGS),
+            level="DEBUG",
+            format="{message}",
+        )
 
 
 # ensure future `from loguru import logger` returns this configured instance

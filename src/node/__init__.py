@@ -37,6 +37,24 @@ from .runtime import Runtime, get_runtime, configure, reset
 from .logger import logger, console
 
 
+def show_logs() -> None:
+    """Print buffered log messages from the last notebook execution.
+
+    In Jupyter, log output is suppressed during live progress display to
+    prevent conflicts.  Call ``node.show_logs()`` in a separate cell to
+    review those messages afterwards.
+    """
+    rt = get_runtime()
+    logs = getattr(rt.reporter, "_last_logs", None) or getattr(
+        getattr(rt.reporter, "cfg", None), "_last_logs", None
+    )
+    if not logs:
+        print("(no buffered logs)")
+        return
+    for line in logs:
+        print(line, end="")
+
+
 def instantiate(name: str, *, sweep: Mapping[str, Any] | None = None) -> Node:
     """Instantiate a node from current runtime config by section name.
 
@@ -107,6 +125,7 @@ __all__ = [
     # Config
     "Config",
     "cfg",
+    "show_logs",
     # Optional
     "RichReporter",
     "track",

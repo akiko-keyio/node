@@ -19,7 +19,13 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 
 from .core import Node, build_graph
-from .logger import _is_jupyter, console as _console
+from .logger import (
+    _is_jupyter,
+    _restore_rich_handler,
+    _suspend_rich_handler,
+    console as _console,
+    logger,
+)
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -207,6 +213,16 @@ class _ReporterCtx:
         if self._jupyter:
             self.cfg.console._live = self
             self._stop = threading.Event()
+            # Suspend RichHandler so logs don't fight with clear_output.
+            # Logs are buffered and accessible via show_logs() in another cell.
+            self._log_records: list[str] = []
+            _suspend_rich_handler()
+            self._buf_handler_id = logger.add(
+                lambda msg: self._log_records.append(str(msg)),
+                level="DEBUG",
+                format="{time:HH:mm:ss} | {level:<8} | {message}",
+                colorize=False,
+            )
             self._print_jupyter()
             self._thread = threading.Thread(
                 target=self._loop_jupyter, daemon=True,
@@ -230,6 +246,9 @@ class _ReporterCtx:
             self._thread.join()
             self._drain()
             self._print_jupyter(final=True)
+            logger.remove(self._buf_handler_id)
+            _restore_rich_handler()
+            self.cfg._last_logs = self._log_records
             self.cfg.console._live = None
         else:
             final = self._render(final=True)
