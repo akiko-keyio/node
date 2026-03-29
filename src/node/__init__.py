@@ -55,6 +55,25 @@ def show_logs() -> None:
         print(line, end="")
 
 
+def log_output():
+    """Display a live log widget that receives log messages during execution.
+
+    Run this in a **separate cell** before starting your task.  During
+    execution the widget streams log messages in real-time while the
+    task cell shows only the live progress display.
+
+    Requires ``ipywidgets`` (``pip install ipywidgets``).
+    """
+    from ipywidgets import Output
+    from IPython.display import display
+
+    rt = get_runtime()
+    widget = Output()
+    rt.reporter._log_widget = widget
+    display(widget)
+    return widget
+
+
 def instantiate(name: str, *, sweep: Mapping[str, Any] | None = None) -> Node:
     """Instantiate a node from current runtime config by section name.
 
@@ -126,6 +145,7 @@ __all__ = [
     "Config",
     "cfg",
     "show_logs",
+    "log_output",
     # Optional
     "RichReporter",
     "track",

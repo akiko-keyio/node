@@ -214,11 +214,16 @@ class _ReporterCtx:
             self.cfg.console._live = self
             self._stop = threading.Event()
             # Suspend RichHandler so logs don't fight with clear_output.
-            # Logs are buffered and accessible via show_logs() in another cell.
-            self._log_records: list[str] = []
             _suspend_rich_handler()
+            self._log_widget = getattr(self.cfg, "_log_widget", None)
+            self._log_records: list[str] = []
+            if self._log_widget is not None:
+                self._log_widget.clear_output()
+                sink = lambda msg: self._log_widget.append_stdout(str(msg))
+            else:
+                sink = lambda msg: self._log_records.append(str(msg))
             self._buf_handler_id = logger.add(
-                lambda msg: self._log_records.append(str(msg)),
+                sink,
                 level="DEBUG",
                 format="{time:HH:mm:ss} | {level:<8} | {message}",
                 colorize=False,
@@ -248,7 +253,8 @@ class _ReporterCtx:
             self._print_jupyter(final=True)
             logger.remove(self._buf_handler_id)
             _restore_rich_handler()
-            self.cfg._last_logs = self._log_records
+            if self._log_widget is None:
+                self.cfg._last_logs = self._log_records
             self.cfg.console._live = None
         else:
             final = self._render(final=True)
