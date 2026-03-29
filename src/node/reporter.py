@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # coverage: ignore-file
 
+import io
 import threading
 import time
 from collections.abc import Generator, Iterable
@@ -11,16 +12,8 @@ from contextlib import nullcontext
 from queue import Empty, SimpleQueue
 from typing import TYPE_CHECKING, Any
 
-from rich.console import Console, Group  # type: ignore[import]
+from rich.console import Console, ConsoleOptions, Group, RenderResult  # type: ignore[import]
 from rich.live import Live  # type: ignore[import]
-from rich.progress import (  # type: ignore[import]
-    BarColumn,
-    Progress,
-    TaskProgressColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
 from rich.spinner import Spinner  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 
@@ -35,6 +28,17 @@ __all__ = ["RichReporter", "track"]
 _track_ctx = threading.local()
 
 
+def _is_jupyter() -> bool:
+    """Detect if running inside a Jupyter notebook (ZMQ-based kernel)."""
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython()
+        return shell is not None and "zmq" in type(shell).__module__
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -45,13 +49,12 @@ class RichReporter:
     def __init__(
         self,
         refresh_per_second: int = 20,
-        show_script_line: bool = True,
         *,
         console: Console | None = None,
         force_terminal: bool = False,
     ):
         self.refresh_per_second = refresh_per_second
-        self.show_script_line = show_script_line
+        self._jupyter = _is_jupyter()
         if console is not None:
             self.console = console
         elif force_terminal:
@@ -80,7 +83,7 @@ def track(
     """
     ctx = getattr(_track_ctx, "ctx", None)
     if ctx is not None:
-        yield from ctx.track(sequence, description, total)
+        yield from sequence
         return
     from rich.progress import track as _track
 
@@ -104,6 +107,19 @@ class _Stats:
         self.state_counts: dict[str, int] = {}
 
 
+class _LiveRenderable:
+    """Drains queued events and yields fresh output each time Rich renders."""
+
+    def __init__(self, ctx: _ReporterCtx) -> None:
+        self._ctx = ctx
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        self._ctx._drain()
+        yield self._ctx._render()
+
+
 class _ReporterCtx:
     _STATE_LABELS = {
         "cache_reading": "reading",
@@ -125,7 +141,6 @@ class _ReporterCtx:
         self.root = root
         self._order = order
         self.q: SimpleQueue = SimpleQueue()
-        self._wake = threading.Event()
 
         self.stats: dict[str, _Stats] = {}
         self.task_order: list[str] = []
@@ -135,9 +150,7 @@ class _ReporterCtx:
 
         self.node_fn: dict[int, str] = {}
         self.node_states: dict[int, str] = {}
-
-        self.tracks: dict[str, tuple[Progress, int, int]] = {}
-        self.node_tracks: dict[int, set[str]] = {}
+        self._jupyter = False
 
         enc = getattr(cfg.console.file, "encoding", None) or "utf-8"
         try:
@@ -149,9 +162,10 @@ class _ReporterCtx:
     # -- State helpers --------------------------------------------------------
 
     def _queue(self, msg: tuple[Any, ...]) -> None:
-        """Push one reporter event and wake the render loop."""
+        """Push one reporter event (and trigger Jupyter refresh if active)."""
         self.q.put(msg)
-        self._wake.set()
+        if self._jupyter:
+            self._refresh_jupyter()
 
     def _adjust_state(self, node_key: int, new_state: str | None) -> None:
         """Transition *node_key* to *new_state* (or remove if ``None``)."""
@@ -190,6 +204,9 @@ class _ReporterCtx:
         order = self._order
         if order is None:
             order, _ = build_graph(self.root, self.runtime.cache)
+
+        self._jupyter = self.cfg._jupyter
+
         for node in order:
             fn = node.fn.__name__
             self.node_fn[node._hash] = fn
@@ -199,27 +216,42 @@ class _ReporterCtx:
             self.stats[fn].total += 1
             self._adjust_state(node._hash, "waiting")
 
-        self.live = Live(
-            self._render(),
-            refresh_per_second=self.cfg.refresh_per_second,
-            transient=True,
-            console=self.cfg.console,
-        )
-        self.live.__enter__()
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        if self._jupyter:
+            from IPython.display import HTML, display
+
+            self._display_id = f"node-reporter-{id(self)}"
+            self._last_refresh = 0.0
+            self._refresh_lock = threading.Lock()
+            display(HTML(self._render_html()), display_id=self._display_id)
+        else:
+            self.live = Live(
+                _LiveRenderable(self),
+                refresh_per_second=self.cfg.refresh_per_second,
+                transient=True,
+                console=self.cfg.console,
+            )
+            self.live.__enter__()
         return self
 
     def __exit__(self, *exc_info):
-        self._stop.set()
-        self._wake.set()
-        self._thread.join()
         self._drain()
         final = self._render(final=True)
-        self.live.update(final, refresh=True)
-        self.live.__exit__(*exc_info)
-        self.live.console.print(final)
+
+        if self._jupyter:
+            from IPython.display import HTML, update_display
+
+            try:
+                update_display(
+                    HTML(self._render_html(final=True)),
+                    display_id=self._display_id,
+                )
+            except Exception:
+                pass
+        else:
+            self.live.update(final, refresh=True)
+            self.live.__exit__(*exc_info)
+            self.live.console.print(final)
+
         (
             self.runtime.on_node_start,
             self.runtime.on_node_end,
@@ -227,11 +259,31 @@ class _ReporterCtx:
             self.runtime.on_flow_end,
         ) = self._orig
 
+    # -- Jupyter refresh ------------------------------------------------------
+
+    def _refresh_jupyter(self) -> None:
+        """Rate-limited display update for Jupyter, safe from any thread."""
+        now = time.monotonic()
+        if now - self._last_refresh < 0.25:
+            return
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            self._last_refresh = now
+            self._drain()
+            from IPython.display import HTML, update_display
+
+            update_display(
+                HTML(self._render_html()), display_id=self._display_id
+            )
+        except Exception:
+            pass
+        finally:
+            self._refresh_lock.release()
+
     # -- Callbacks ------------------------------------------------------------
 
     def _on_start(self, n: Node) -> None:
-        # Keep start events lightweight: the current UI renders per-function rows
-        # and does not consume per-node rich labels.
         self._queue(("S", n._hash, time.perf_counter()))
         _track_ctx.ctx = self
         _track_ctx.node = n._hash
@@ -243,10 +295,6 @@ class _ReporterCtx:
         self._queue(("E", n._hash, dur, cached, failed))
         if getattr(_track_ctx, "ctx", None) is self:
             _track_ctx.ctx = _track_ctx.node = None
-        ids = self.node_tracks.get(n._hash)
-        if ids:
-            for tid in list(ids):
-                self._queue(("TE", tid))
         self.current_node = None
         if self._orig[1]:
             self._orig[1](n, dur, cached, failed)
@@ -261,28 +309,7 @@ class _ReporterCtx:
         if self._orig[3]:
             self._orig[3](root, wall, count, fails)
 
-    # -- Event loop -----------------------------------------------------------
-
-    def _loop(self) -> None:
-        interval = 1.0 / self.cfg.refresh_per_second
-        while not self._stop.is_set():
-            self._drain()
-            self.live.update(self._render())
-            self._wake.wait(interval)
-            self._wake.clear()
-        self._drain()
-
-    def track(
-        self, sequence: Iterable[Any], description: str, total: int | None
-    ) -> Generator[Any, None, None]:
-        tid = f"{time.perf_counter()}-{threading.get_ident()}"
-        self._queue(("TS", tid, self.current_node or 0, description, total))
-        count = 0
-        for item in sequence:
-            yield item
-            count += 1
-            self._queue(("TU", tid, count))
-        self._queue(("TE", tid))
+    # -- Event drain ----------------------------------------------------------
 
     def _drain(self) -> None:
         while True:
@@ -313,38 +340,6 @@ class _ReporterCtx:
                     else:
                         st.completed += 1
                         st.last_end = time.perf_counter()
-            elif kind == "TS":
-                _, tid, nk, desc, tot = msg
-                prog = self._make_progress()
-                task = prog.add_task(desc, total=tot)
-                self.tracks[tid] = (prog, task, nk)
-                if nk:
-                    self.node_tracks.setdefault(nk, set()).add(tid)
-            elif kind == "TU":
-                info = self.tracks.get(msg[1])
-                if info:
-                    info[0].update(info[1], completed=msg[2])
-            elif kind == "TE":
-                info = self.tracks.pop(msg[1], None)
-                if info and info[2]:
-                    ids = self.node_tracks.get(info[2])
-                    if ids is not None:
-                        ids.discard(msg[1])
-                        if not ids:
-                            self.node_tracks.pop(info[2], None)
-
-    def _make_progress(self) -> Progress:
-        return Progress(
-            TextColumn("{task.completed}/{task.total}"),
-            TextColumn("left:{task.remaining}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            auto_refresh=False,
-            console=self.cfg.console,
-            refresh_per_second=self.cfg.refresh_per_second,
-        )
 
     # -- Rendering ------------------------------------------------------------
 
@@ -374,6 +369,17 @@ class _ReporterCtx:
         if s >= 60:
             return f"{int(s // 60)}m"
         return f"{int(s)}s"
+
+    def _render_html(self, final: bool = False) -> str:
+        """Render current state as styled HTML for Jupyter display."""
+        con = Console(
+            record=True,
+            file=io.StringIO(),
+            color_system="truecolor",
+            width=120,
+        )
+        con.print(self._render(final=final))
+        return con.export_html(inline_styles=True)
 
     def _render(self, final: bool = False) -> Group:
         now = time.perf_counter()

@@ -104,11 +104,12 @@ def test_state_labels_use_reading_writing_names():
     assert _ReporterCtx._STATE_LABELS["cache_writing"] == "writing"
 
 
-def test_queue_sets_wake_event():
-    """Queueing reporter events should wake render loop promptly."""
+def test_queue_enqueues_event():
+    """Queueing reporter events should place them in the internal queue."""
     ctx = _make_ctx()
-    assert not ctx._wake.is_set()
+    assert ctx.q.empty()
 
     ctx._queue(("X",))
 
-    assert ctx._wake.is_set()
+    assert not ctx.q.empty()
+    assert ctx.q.get_nowait() == ("X",)
