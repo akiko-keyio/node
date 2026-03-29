@@ -18,7 +18,7 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 
 from .core import Node, build_graph
-from .logger import console as _console
+from .logger import _is_jupyter, console as _console
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -26,17 +26,6 @@ if TYPE_CHECKING:
 __all__ = ["RichReporter", "track"]
 
 _track_ctx = threading.local()
-
-
-def _is_jupyter() -> bool:
-    """Detect if running inside a Jupyter notebook (ZMQ-based kernel)."""
-    try:
-        from IPython import get_ipython
-
-        shell = get_ipython()
-        return shell is not None and "zmq" in type(shell).__module__
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +211,7 @@ class _ReporterCtx:
             self._display_id = f"node-reporter-{id(self)}"
             self._last_refresh = 0.0
             self._refresh_lock = threading.Lock()
+            self.cfg.console._live = self
             display(HTML(self._render_html()), display_id=self._display_id)
         else:
             self.live = Live(
@@ -247,6 +237,7 @@ class _ReporterCtx:
                 )
             except Exception:
                 pass
+            self.cfg.console._live = None
         else:
             self.live.update(final, refresh=True)
             self.live.__exit__(*exc_info)
@@ -370,6 +361,13 @@ class _ReporterCtx:
             return f"{int(s // 60)}m"
         return f"{int(s)}s"
 
+    _JUPYTER_HTML_FORMAT = (
+        '<pre style="white-space:pre;overflow-x:auto;line-height:normal;'
+        "font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace;"
+        'background:#282828;color:#d4d4d4;padding:8px;margin:0;border-radius:4px">'
+        "{code}</pre>"
+    )
+
     def _render_html(self, final: bool = False) -> str:
         """Render current state as styled HTML for Jupyter display."""
         con = Console(
@@ -379,7 +377,9 @@ class _ReporterCtx:
             width=120,
         )
         con.print(self._render(final=final))
-        return con.export_html(inline_styles=True)
+        return con.export_html(
+            inline_styles=True, code_format=self._JUPYTER_HTML_FORMAT
+        )
 
     def _render(self, final: bool = False) -> Group:
         now = time.perf_counter()

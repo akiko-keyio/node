@@ -6,10 +6,24 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.traceback import install
 
+
+def _is_jupyter() -> bool:
+    """Detect if running inside a Jupyter notebook (ZMQ-based kernel)."""
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython()
+        return shell is not None and "zmq" in type(shell).__module__
+    except Exception:
+        return False
+
+
 # beautify tracebacks with Rich
 install()
 
-console = Console()
+# In Jupyter, force terminal mode so all output goes through stdout as a
+# contiguous ANSI stream instead of creating separate display() elements.
+console = Console(force_terminal=True) if _is_jupyter() else Console()
 
 # remove default handler
 logger.remove()
