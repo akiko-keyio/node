@@ -207,6 +207,17 @@ class _ReporterCtx:
         if self._jupyter:
             self.cfg.console._live = self
             self._stop = threading.Event()
+            # Use ipywidgets.Output for scoped updates so logger output
+            # in the cell's stdout is not cleared by progress refreshes.
+            self._ipy_output = None
+            try:
+                from ipywidgets import Output
+                from IPython.display import display
+
+                self._ipy_output = Output()
+                display(self._ipy_output)
+            except Exception:
+                pass
             self._print_jupyter()
             self._thread = threading.Thread(
                 target=self._loop_jupyter, daemon=True,
@@ -247,17 +258,23 @@ class _ReporterCtx:
     # -- Jupyter refresh ------------------------------------------------------
 
     def _print_jupyter(self, final: bool = False) -> None:
-        """Render progress to stdout with ANSI colors for Jupyter."""
-        from IPython.display import clear_output
-
-        clear_output(wait=True)
+        """Render progress to a scoped output area (or full cell as fallback)."""
         buf = io.StringIO()
         Console(
             file=buf, force_terminal=True,
             color_system="truecolor", width=120,
         ).print(self._render(final=final))
-        sys.stdout.write(buf.getvalue())
-        sys.stdout.flush()
+        text = buf.getvalue()
+
+        if self._ipy_output is not None:
+            self._ipy_output.clear_output(wait=True)
+            self._ipy_output.append_stdout(text)
+        else:
+            from IPython.display import clear_output
+
+            clear_output(wait=True)
+            sys.stdout.write(text)
+            sys.stdout.flush()
 
     def _loop_jupyter(self) -> None:
         """Background refresh loop for Jupyter — mirrors Live's auto-refresh."""
