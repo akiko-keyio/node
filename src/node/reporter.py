@@ -152,10 +152,8 @@ class _ReporterCtx:
     # -- State helpers --------------------------------------------------------
 
     def _queue(self, msg: tuple[Any, ...]) -> None:
-        """Push one reporter event (and trigger Jupyter refresh if active)."""
+        """Push one reporter event."""
         self.q.put(msg)
-        if self._jupyter:
-            self._refresh_jupyter()
 
     def _adjust_state(self, node_key: int, new_state: str | None) -> None:
         """Transition *node_key* to *new_state* (or remove if ``None``)."""
@@ -207,10 +205,13 @@ class _ReporterCtx:
             self._adjust_state(node._hash, "waiting")
 
         if self._jupyter:
-            self._last_refresh = 0.0
-            self._refresh_lock = threading.Lock()
             self.cfg.console._live = self
+            self._stop = threading.Event()
             self._print_jupyter()
+            self._thread = threading.Thread(
+                target=self._loop_jupyter, daemon=True,
+            )
+            self._thread.start()
         else:
             self.live = Live(
                 _LiveRenderable(self),
@@ -225,6 +226,9 @@ class _ReporterCtx:
         self._drain()
 
         if self._jupyter:
+            self._stop.set()
+            self._thread.join()
+            self._drain()
             self._print_jupyter(final=True)
             self.cfg.console._live = None
         else:
@@ -255,21 +259,15 @@ class _ReporterCtx:
         sys.stdout.write(buf.getvalue())
         sys.stdout.flush()
 
-    def _refresh_jupyter(self) -> None:
-        """Rate-limited display update for Jupyter, safe from any thread."""
-        now = time.monotonic()
-        if now - self._last_refresh < 0.5:
-            return
-        if not self._refresh_lock.acquire(blocking=False):
-            return
-        try:
-            self._last_refresh = now
-            self._drain()
-            self._print_jupyter()
-        except Exception:
-            pass
-        finally:
-            self._refresh_lock.release()
+    def _loop_jupyter(self) -> None:
+        """Background refresh loop for Jupyter — mirrors Live's auto-refresh."""
+        interval = 1.0 / min(self.cfg.refresh_per_second, 8)
+        while not self._stop.wait(interval):
+            try:
+                self._drain()
+                self._print_jupyter()
+            except Exception:
+                pass
 
     # -- Callbacks ------------------------------------------------------------
 
