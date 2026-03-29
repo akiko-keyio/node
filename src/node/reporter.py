@@ -19,7 +19,13 @@ from rich.spinner import Spinner  # type: ignore[import]
 from rich.text import Text  # type: ignore[import]
 
 from .core import Node, build_graph
-from .logger import _is_jupyter, console as _console
+from .logger import (
+    _is_jupyter,
+    _remove_rich_handler,
+    _restore_rich_handler,
+    console as _console,
+    logger,
+)
 
 if TYPE_CHECKING:
     from .runtime import Runtime
@@ -212,6 +218,15 @@ class _ReporterCtx:
             self.cfg.console._live = self
             self._print_jupyter()
         else:
+            # Buffer log messages during Live to prevent stdout conflicts.
+            self._log_records: list[str] = []
+            _remove_rich_handler()
+            self._buf_handler_id = logger.add(
+                lambda msg: self._log_records.append(str(msg)),
+                level="DEBUG",
+                format="{time:HH:mm:ss} | {level:<8} | {message}",
+                colorize=False,
+            )
             self.live = Live(
                 _LiveRenderable(self),
                 refresh_per_second=self.cfg.refresh_per_second,
@@ -231,7 +246,12 @@ class _ReporterCtx:
             final = self._render(final=True)
             self.live.update(final, refresh=True)
             self.live.__exit__(*exc_info)
-            self.live.console.print(final)
+            # Restore RichHandler and flush buffered logs after Live area.
+            logger.remove(self._buf_handler_id)
+            _restore_rich_handler()
+            self.cfg.console.print(final)
+            for record in self._log_records:
+                self.cfg.console.print(record, end="", highlight=False)
 
         (
             self.runtime.on_node_start,
