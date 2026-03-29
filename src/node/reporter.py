@@ -267,8 +267,9 @@ class _ReporterCtx:
         text = buf.getvalue()
 
         if self._ipy_output is not None:
-            self._ipy_output.clear_output(wait=True)
-            self._ipy_output.append_stdout(text)
+            self._ipy_output.outputs = (
+                {"output_type": "stream", "name": "stdout", "text": text},
+            )
         else:
             from IPython.display import clear_output
 
