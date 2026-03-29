@@ -5,6 +5,7 @@ from __future__ import annotations
 # coverage: ignore-file
 
 import io
+import sys
 import threading
 import time
 from collections.abc import Generator, Iterable
@@ -206,13 +207,10 @@ class _ReporterCtx:
             self._adjust_state(node._hash, "waiting")
 
         if self._jupyter:
-            from IPython.display import HTML, display
-
-            self._display_id = f"node-reporter-{id(self)}"
             self._last_refresh = 0.0
             self._refresh_lock = threading.Lock()
             self.cfg.console._live = self
-            display(HTML(self._render_html()), display_id=self._display_id)
+            self._print_jupyter()
         else:
             self.live = Live(
                 _LiveRenderable(self),
@@ -225,20 +223,12 @@ class _ReporterCtx:
 
     def __exit__(self, *exc_info):
         self._drain()
-        final = self._render(final=True)
 
         if self._jupyter:
-            from IPython.display import HTML, update_display
-
-            try:
-                update_display(
-                    HTML(self._render_html(final=True)),
-                    display_id=self._display_id,
-                )
-            except Exception:
-                pass
+            self._print_jupyter(final=True)
             self.cfg.console._live = None
         else:
+            final = self._render(final=True)
             self.live.update(final, refresh=True)
             self.live.__exit__(*exc_info)
             self.live.console.print(final)
@@ -252,21 +242,30 @@ class _ReporterCtx:
 
     # -- Jupyter refresh ------------------------------------------------------
 
+    def _print_jupyter(self, final: bool = False) -> None:
+        """Render progress to stdout with ANSI colors for Jupyter."""
+        from IPython.display import clear_output
+
+        clear_output(wait=True)
+        buf = io.StringIO()
+        Console(
+            file=buf, force_terminal=True,
+            color_system="truecolor", width=120,
+        ).print(self._render(final=final))
+        sys.stdout.write(buf.getvalue())
+        sys.stdout.flush()
+
     def _refresh_jupyter(self) -> None:
         """Rate-limited display update for Jupyter, safe from any thread."""
         now = time.monotonic()
-        if now - self._last_refresh < 0.25:
+        if now - self._last_refresh < 0.5:
             return
         if not self._refresh_lock.acquire(blocking=False):
             return
         try:
             self._last_refresh = now
             self._drain()
-            from IPython.display import HTML, update_display
-
-            update_display(
-                HTML(self._render_html()), display_id=self._display_id
-            )
+            self._print_jupyter()
         except Exception:
             pass
         finally:
@@ -360,26 +359,6 @@ class _ReporterCtx:
         if s >= 60:
             return f"{int(s // 60)}m"
         return f"{int(s)}s"
-
-    _JUPYTER_HTML_FORMAT = (
-        '<pre style="white-space:pre;overflow-x:auto;line-height:normal;'
-        "font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace;"
-        'background:#282828;color:#d4d4d4;padding:8px;margin:0;border-radius:4px">'
-        "{code}</pre>"
-    )
-
-    def _render_html(self, final: bool = False) -> str:
-        """Render current state as styled HTML for Jupyter display."""
-        con = Console(
-            record=True,
-            file=io.StringIO(),
-            color_system="truecolor",
-            width=120,
-        )
-        con.print(self._render(final=final))
-        return con.export_html(
-            inline_styles=True, code_format=self._JUPYTER_HTML_FORMAT
-        )
 
     def _render(self, final: bool = False) -> Group:
         now = time.perf_counter()
