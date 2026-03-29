@@ -38,7 +38,7 @@ class RichReporter:
 
     def __init__(
         self,
-        refresh_per_second: int = 20,
+        refresh_per_second: int = 30,
         *,
         console: Console | None = None,
         force_terminal: bool = False,
@@ -261,7 +261,7 @@ class _ReporterCtx:
 
     def _loop_jupyter(self) -> None:
         """Background refresh loop for Jupyter — mirrors Live's auto-refresh."""
-        interval = 1.0 / min(self.cfg.refresh_per_second, 8)
+        interval = 1.0 / self.cfg.refresh_per_second
         while not self._stop.wait(interval):
             try:
                 self._drain()
