@@ -60,6 +60,74 @@ def test_instantiate_dependency(runtime_factory):
     assert n() == 20
 
 
+def test_instantiate_overrides_apply_without_mutating_config(runtime_factory):
+    @node.define()
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "add", add)
+
+    cfg = {
+        "sum_node": {
+            "_target_": f"{module_name}.add",
+            "x": 2,
+            "y": 3,
+        }
+    }
+    rt = runtime_factory(config=Config(cfg))
+
+    n = node.instantiate("sum_node", overrides={"sum_node.y": 10})
+    assert n() == 12
+    assert rt.config.sum_node.y == 3
+
+
+def test_instantiate_overrides_propagate_to_referenced_subnodes(runtime_factory):
+    @node.define()
+    def trop_ls(trop_matrix: int, grid_location: str, basis: str, degree: int) -> str:
+        return f"{basis}:{degree}:{trop_matrix}:{grid_location}"
+
+    @node.define()
+    def trop_eval(trop_ls: str) -> str:
+        return trop_ls
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "trop_ls", trop_ls)
+    setattr(this_module, "trop_eval", trop_eval)
+
+    cfg = {
+        "trop_matrix": 7,
+        "grid_location": "G0",
+        "trop_ls": {
+            "_target_": f"{module_name}.trop_ls",
+            "trop_matrix": "${trop_matrix}",
+            "grid_location": "${grid_location}",
+            "basis": "ahsh",
+            "degree": 15,
+        },
+        "trop_eval": {
+            "_target_": f"{module_name}.trop_eval",
+            "trop_ls": "${trop_ls}",
+        },
+    }
+    rt = runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "trop_eval",
+        overrides={
+            "grid_location": "G9",
+            "trop_ls.basis": "poly",
+            "trop_ls.degree": 3,
+        },
+    )
+    assert n() == "poly:3:7:G9"
+    assert rt.config.grid_location == "G0"
+    assert rt.config.trop_ls.basis == "ahsh"
+    assert rt.config.trop_ls.degree == 15
+
+
 def test_instantiate_invalid_config(runtime_factory):
     @node.define()
     def noop(x: int) -> int:
@@ -113,6 +181,37 @@ def test_instantiate_sweep_top_level(runtime_factory):
     assert result.dims == ("sweep_basis", "sweep_degree")
     assert result.shape == (2, 3)
     assert result[1, 2] == "poly:3"
+
+
+def test_instantiate_overrides_can_be_combined_with_sweep(runtime_factory):
+    @node.define()
+    def score(height: int, basis: str) -> str:
+        return f"{basis}@{height}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "score", score)
+
+    cfg = {
+        "ref_height": 1000,
+        "eval_node": {
+            "_target_": f"{module_name}.score",
+            "height": "${ref_height}",
+            "basis": "ahsh",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    n = node.instantiate(
+        "eval_node",
+        overrides={"ref_height": 5000},
+        sweep={"eval_node.basis": ["ahsh", "poly"]},
+    )
+    result = n()
+    assert result.dims == ("sweep_basis",)
+    assert result.shape == (2,)
+    assert result[0] == "ahsh@5000"
+    assert result[1] == "poly@5000"
 
 
 def test_instantiate_sweep_dotted_path_with_existing_dimension(runtime_factory):
@@ -472,6 +571,32 @@ def test_instantiate_sweep_toplevel_rejects_missing_key(runtime_factory):
 
     with pytest.raises(ConfigurationError, match="key not found"):
         node.instantiate("my_section", sweep={"nonexistent": [1, 2]})
+
+
+def test_instantiate_rejects_conflicting_override_and_sweep(runtime_factory):
+    @node.define()
+    def score(height: int) -> str:
+        return f"h={height}"
+
+    module_name = __name__
+    this_module = sys.modules[module_name]
+    setattr(this_module, "score", score)
+
+    cfg = {
+        "ref_height": 1000,
+        "eval_node": {
+            "_target_": f"{module_name}.score",
+            "height": "${ref_height}",
+        },
+    }
+    runtime_factory(config=Config(cfg))
+
+    with pytest.raises(ConfigurationError, match="both overrides and sweep"):
+        node.instantiate(
+            "eval_node",
+            overrides={"ref_height": 5000},
+            sweep={"ref_height": [0, 1000, 5000]},
+        )
 
 
 def test_instantiate_sweep_axis_value_change_rebuilds_graph(runtime_factory):

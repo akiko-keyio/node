@@ -74,18 +74,30 @@ def log_output():
     return widget
 
 
-def instantiate(name: str, *, sweep: Mapping[str, Any] | None = None) -> Node:
+def instantiate(
+    name: str,
+    *,
+    overrides: Mapping[str, Any] | None = None,
+    sweep: Mapping[str, Any] | None = None,
+) -> Node:
     """Instantiate a node from current runtime config by section name.
 
     The config is read when this function is called. The returned node keeps that
     bound configuration; later ``node.cfg`` updates do not retroactively change it.
     Re-run ``instantiate()`` after config edits if you want a new bound node.
+    When ``overrides`` is provided, those values are applied only for this
+    instantiation without mutating ``node.cfg``.
     When ``sweep`` is provided, instantiate returns a dimensioned node over the
     Cartesian product of sweep values. Sweep keys use global config paths such as
     ``"train.optimizer"`` or ``"trop_ls.degree"``.
     """
     runtime = get_runtime()
-    return runtime.config.instantiate(name, runtime=runtime, sweep=sweep)
+    return runtime.config.instantiate(
+        name,
+        runtime=runtime,
+        overrides=overrides,
+        sweep=sweep,
+    )
 
 
 class _CfgProxy:

@@ -103,6 +103,100 @@ class Config:
             raise ValueError("sweep axis values cannot be empty")
         return axis_values
 
+    def _resolve_override_target(
+        self,
+        raw_path: Any,
+        *,
+        kind: str,
+    ) -> tuple[str, tuple[str, str]]:
+        """Validate one config path and map it to the internal override key."""
+        from .exceptions import ConfigurationError
+
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ConfigurationError(
+                f"Invalid {kind}: {raw_path!r}. Expected non-empty string path."
+            )
+
+        path = raw_path.strip()
+        parts = [part for part in path.split(".") if part]
+        if not parts:
+            raise ConfigurationError(
+                f"Invalid {kind}: {raw_path!r}. Expected non-empty string path."
+            )
+
+        if len(parts) == 1:
+            key = parts[0]
+            if key not in self._conf:
+                raise ConfigurationError(
+                    f"Invalid {kind} '{path}': key not found in config."
+                )
+            if OmegaConf.is_dict(self._conf[key]):
+                raise ConfigurationError(
+                    f"Invalid {kind} '{path}': top-level key '{key}' is a "
+                    "mapping, not a scalar. Use 'section.param' to target "
+                    "parameters within a section."
+                )
+            return path, (_TOPLEVEL_SECTION, key)
+
+        section = parts[0]
+        param_path = ".".join(parts[1:])
+        if section not in self._conf or not OmegaConf.is_dict(self._conf[section]):
+            raise ConfigurationError(
+                f"Invalid {kind} '{path}': section '{section}' is not a config mapping."
+            )
+
+        sentinel = object()
+        current = OmegaConf.select(self._conf[section], param_path, default=sentinel)
+        if current is sentinel:
+            raise ConfigurationError(f"Invalid {kind} '{path}': path does not exist.")
+
+        return path, (section, param_path)
+
+    def _build_literal_overrides(
+        self,
+        overrides: Mapping[str, Any],
+    ) -> dict[tuple[str, str], Any]:
+        """Build one-shot value overrides from global config paths."""
+        result: dict[tuple[str, str], Any] = {}
+        for raw_path, value in overrides.items():
+            _, target = self._resolve_override_target(raw_path, kind="override key")
+            result[target] = value
+        return result
+
+    def _merge_override_maps(
+        self,
+        *,
+        literal_overrides: Mapping[tuple[str, str], Any] | None = None,
+        sweep_overrides: Mapping[tuple[str, str], Any] | None = None,
+    ) -> dict[tuple[str, str], Any] | None:
+        """Merge override sources, rejecting ambiguous duplicates."""
+        from .exceptions import ConfigurationError
+
+        merged: dict[tuple[str, str], Any] = {}
+        source_by_target: dict[tuple[str, str], str] = {}
+        for source_name, mapping in (
+            ("overrides", literal_overrides),
+            ("sweep", sweep_overrides),
+        ):
+            if not mapping:
+                continue
+            for target, value in mapping.items():
+                previous = source_by_target.get(target)
+                if previous is not None:
+                    section, param_path = target
+                    rendered_path = (
+                        param_path
+                        if section == _TOPLEVEL_SECTION
+                        else f"{section}.{param_path}"
+                    )
+                    raise ConfigurationError(
+                        f"Conflicting override sources for '{rendered_path}': "
+                        f"specified in both {previous} and {source_name}."
+                    )
+                merged[target] = value
+                source_by_target[target] = source_name
+        return merged or None
+
     def _build_sweep_axis_node(self, dim_name: str, values: list[Any]) -> "Node":
         """Build one axis node used by instantiate(sweep=...)."""
         from .core import Node
@@ -139,59 +233,18 @@ class Config:
         """
         from .exceptions import ConfigurationError
 
-        sentinel = object()
         dim_to_path: dict[str, str] = {}
         overrides: dict[tuple[str, str], "Node"] = {}
         for raw_path, raw_values in sweep.items():
-            if not isinstance(raw_path, str) or not raw_path.strip():
-                raise ConfigurationError(
-                    f"Invalid sweep key: {raw_path!r}. Expected non-empty string path."
-                )
-            path = raw_path.strip()
-            parts = [p for p in path.split(".") if p]
+            path, target = self._resolve_override_target(raw_path, kind="sweep key")
 
             try:
                 axis_values = self._normalize_sweep_axis_values(raw_values)
             except ValueError as e:
                 raise ConfigurationError(f"Invalid sweep values for '{path}': {e}") from e
 
-            if len(parts) == 1:
-                key = parts[0]
-                if key not in self._conf:
-                    raise ConfigurationError(
-                        f"Invalid sweep key '{path}': key not found in config."
-                    )
-                if OmegaConf.is_dict(self._conf[key]):
-                    raise ConfigurationError(
-                        f"Invalid sweep key '{path}': top-level key '{key}' is a "
-                        "mapping, not a scalar. Use 'section.param' to sweep "
-                        "parameters within a section."
-                    )
-                dim_name = f"sweep_{key}"
-                previous = dim_to_path.get(dim_name)
-                if previous is not None and previous != path:
-                    raise ConfigurationError(
-                        f"Sweep dimension name collision: '{previous}' and '{path}' "
-                        f"both map to '{dim_name}'."
-                    )
-                dim_to_path[dim_name] = path
-                overrides[(_TOPLEVEL_SECTION, key)] = self._build_sweep_axis_node(
-                    dim_name, axis_values
-                )
-                continue
-
-            section = parts[0]
-            param_path = ".".join(parts[1:])
-            if section not in self._conf or not OmegaConf.is_dict(self._conf[section]):
-                raise ConfigurationError(
-                    f"Invalid sweep key '{path}': section '{section}' is not a config mapping."
-                )
-
-            current = OmegaConf.select(self._conf[section], param_path, default=sentinel)
-            if current is sentinel:
-                raise ConfigurationError(f"Invalid sweep key '{path}': path does not exist.")
-
-            leaf = parts[-1]
+            _, param_path = target
+            leaf = param_path.rsplit(".", 1)[-1]
             dim_name = f"sweep_{leaf}"
             previous = dim_to_path.get(dim_name)
             if previous is not None and previous != path:
@@ -199,7 +252,7 @@ class Config:
                     f"Sweep dimension name collision: '{previous}' and '{path}' both map to '{dim_name}'."
                 )
             dim_to_path[dim_name] = path
-            overrides[(section, param_path)] = self._build_sweep_axis_node(dim_name, axis_values)
+            overrides[target] = self._build_sweep_axis_node(dim_name, axis_values)
         return overrides
 
     def _wrap_dict_as_node(
@@ -340,6 +393,7 @@ class Config:
         name: str,
         *,
         runtime: Any | None = None,
+        overrides: Mapping[str, Any] | None = None,
         sweep: Mapping[str, Any] | None = None,
     ) -> "Node":
         """Instantiate a node from config section ``name``.
@@ -351,6 +405,12 @@ class Config:
         runtime:
             Runtime used to resolve nested ``${...}`` references to nodes.
             If omitted, use the global runtime.
+        overrides:
+            Optional one-shot config overrides applied while building this node.
+            Keys follow the same global config-path syntax as ``sweep``:
+            ``"section.param"`` for section parameters or a top-level scalar
+            key such as ``"ref_height"``. The underlying runtime config is not
+            mutated.
         sweep:
             Optional parameter sweep mapping. Keys are either global config
             paths (``"section.param"``, e.g. ``"trop_ls.degree"``) or top-level
@@ -374,18 +434,29 @@ class Config:
 
             runtime = get_runtime()
 
+        if overrides is not None and not isinstance(overrides, Mapping):
+            raise ConfigurationError("overrides must be a mapping of path -> value.")
+        literal_overrides = (
+            self._build_literal_overrides(overrides) if overrides else None
+        )
+
         if sweep is not None:
             if not isinstance(sweep, Mapping):
                 raise ConfigurationError("sweep must be a mapping of path -> values.")
-            overrides = self._build_sweep_overrides(sweep) if sweep else None
+            sweep_overrides = self._build_sweep_overrides(sweep) if sweep else None
         else:
-            overrides = None
+            sweep_overrides = None
+
+        merged_overrides = self._merge_override_maps(
+            literal_overrides=literal_overrides,
+            sweep_overrides=sweep_overrides,
+        )
 
         return self._instantiate_impl(
             name,
             runtime=runtime,
             memo={},
-            overrides=overrides,
+            overrides=merged_overrides,
         )
 
     def _build_node(

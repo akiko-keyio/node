@@ -287,6 +287,19 @@ load_data()()  # 使用修改后的值
 后续如果再修改 `node.cfg`，已经返回的节点不会自动更新；需要重新调用
 `node.instantiate("xxx")` 才会使用新的配置值。
 
+如果只想针对一次构图临时改参数，而不污染全局配置，可以使用 `overrides`：
+
+```python
+grid = node.instantiate(
+    "train",
+    overrides={
+        "train.optimizer": "sgd",
+        "train.lr": 0.001,
+    },
+)
+result = grid()
+```
+
 `instantiate` 也支持参数扫描（笛卡尔积）：
 
 ```python
