@@ -26,3 +26,5 @@ example/
 
 # Local AI tooling
 .claude/
+.cursor/
+.qoder/
