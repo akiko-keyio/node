@@ -149,6 +149,8 @@ class _ReporterCtx:
         self.node_states: dict[int, str] = {}
         self._jupyter = False
         self._log_lock = threading.Lock()
+        self._log_dirty = False
+        self._log_update_pending = False
 
         enc = getattr(cfg.console.file, "encoding", None) or "utf-8"
         try:
@@ -253,6 +255,7 @@ class _ReporterCtx:
             self._thread.join()
             self._drain()
             self._print_jupyter(final=True)
+            self._flush_log_widget()
             logger.remove(self._buf_handler_id)
             _restore_rich_handler()
             if self._log_widget is None:
@@ -293,8 +296,8 @@ class _ReporterCtx:
         text = str(msg)
         with self._log_lock:
             self._log_records.append(text)
-            if self._log_widget is not None:
-                self._set_log_widget("".join(self._log_records))
+            self._log_dirty = True
+        self._schedule_log_widget_update()
 
     def _set_log_widget(self, text: str) -> None:
         """Replace notebook log widget content with a scrollable text block."""
@@ -311,6 +314,38 @@ class _ReporterCtx:
             f"{escaped}</pre></div>"
         )
 
+    def _schedule_log_widget_update(self) -> None:
+        """Update log widget through the notebook kernel event loop."""
+        if self._log_widget is None or self._log_update_pending:
+            return
+        self._log_update_pending = True
+        try:
+            from IPython import get_ipython
+
+            shell = get_ipython()
+            kernel = getattr(shell, "kernel", None)
+            io_loop = getattr(kernel, "io_loop", None)
+            if io_loop is not None:
+                io_loop.add_callback(self._flush_log_widget)
+                return
+        except Exception:
+            pass
+        self._flush_log_widget()
+
+    def _flush_log_widget(self) -> None:
+        """Apply the latest buffered logs to the widget."""
+        try:
+            if self._log_widget is None:
+                return
+            with self._log_lock:
+                if not self._log_dirty:
+                    return
+                text = "".join(self._log_records)
+                self._log_dirty = False
+            self._set_log_widget(text)
+        finally:
+            self._log_update_pending = False
+
     def _loop_jupyter(self) -> None:
         """Background refresh loop for Jupyter — mirrors Live's auto-refresh."""
         interval = 1.0 / self.cfg.refresh_per_second
@@ -318,6 +353,7 @@ class _ReporterCtx:
             try:
                 self._drain()
                 self._print_jupyter()
+                self._schedule_log_widget_update()
             except Exception:
                 pass
 
